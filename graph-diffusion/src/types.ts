@@ -9,8 +9,16 @@ export interface Vertex {
   edges: number[]; // indices of connected vertices
 }
 
+export interface Edge {
+  index: number;
+  length?: number; // Optional length (can be computed from vertex positions)
+  v1: number; // index of vertex 1
+  v2: number; // index of vertex 2
+}
+
 export interface Graph {
   vertices: Vertex[];
+  edges: Edge[];
 }
 
 /**
@@ -78,4 +86,15 @@ function defaultColorScale(value: number): number {
     const b = Math.round(128 + 127 * t);
     return (r << 16) | (g << 8) | b;
   }
+}
+
+/**
+ * Simulation parameters for diffusion solver
+ * 
+ */
+export interface DiffusionParams {
+  diffusionRate: number; // Rate of diffusion (D)
+  timeStep: number; // Time step for simulation (dt)
+  iterations: number; // Number of iterations to run
+  initialValues: FunctionValues; // Initial condition at t=0
 }
