@@ -1,6 +1,13 @@
 # Graph Renderer - API Documentation
 
-A minimal TypeScript rendering library for visualizing functions on graph structures. Perfect for integrating with simulation libraries that compute discrete differential equations on graphs.
+A TypeScript rendering library for visualizing scalar functions on graph structures. Built on Pixi.js v8 for GPU-accelerated rendering. Designed to integrate with simulation libraries that compute discrete differential equations on graphs.
+
+**Visual features:**
+- Nodes colored and sized by per-vertex scalar values
+- Directed flux arrows on edges, scaled by magnitude
+- Per-vertex text labels: current value, inflow, outflow, net flow
+- Per-edge text labels: flux magnitude
+- Toggleable text label overlay
 
 ## Table of Contents
 - [Quick Start](#quick-start)
@@ -14,41 +21,55 @@ A minimal TypeScript rendering library for visualizing functions on graph struct
 
 ## Quick Start
 
-### 1. Define Your Graph (JSON)
+### 1. Build a Graph Object
 
-Create a JSON file with vertices and edges:
+The renderer requires a `Graph` with both `vertices` and `edges` populated. The `loadGraph()` helper in `main.ts` builds this from a JSON adjacency list; use it as a reference for your own loading code.
 
-```json
-{
-  "vertices": [
-    { "index": 0, "x": 0.0, "y": 0.5, "edges": [1, 2] },
-    { "index": 1, "x": 0.5, "y": 0.0, "edges": [0, 2] },
-    { "index": 2, "x": 1.0, "y": 0.5, "edges": [0, 1] }
-  ]
+```typescript
+import type { Graph, Edge } from "./types";
+
+// Build edges from vertex adjacency list
+function buildEdges(vertices: Graph["vertices"]): Edge[] {
+  const edges: Edge[] = [];
+  const seen = new Set<string>();
+  let idx = 0;
+  for (const v of vertices) {
+    for (const neighborIdx of v.edges) {
+      const key = [v.index, neighborIdx].sort().join("-");
+      if (!seen.has(key)) {
+        const neighbor = vertices[neighborIdx];
+        const length = Math.hypot(v.x - neighbor.x, v.y - neighbor.y);
+        edges.push({ index: idx++, v1: v.index, v2: neighborIdx, length });
+        seen.add(key);
+      }
+    }
+  }
+  return edges;
 }
+
+const raw = await fetch("graph.json").then(r => r.json());
+const graph: Graph = {
+  vertices: raw.vertices,
+  edges: buildEdges(raw.vertices),
+};
 ```
 
-### 2. Load and Render
+### 2. Create a Renderer and Render
 
 ```typescript
 import { GraphRenderer } from "./render/renderer";
-import type { Graph, FunctionValues } from "./types";
+import type { FunctionValues } from "./types";
 
-// Load graph
-const graph: Graph = await fetch('graph.json').then(r => r.json());
-
-// Create renderer
-const container = document.getElementById('app')!;
+const container = document.getElementById("app")!;
 const renderer = await GraphRenderer.create(container, graph);
 
-// Set vertex values
+// Scalar values at each vertex
 const values: FunctionValues = new Map([
   [0, 0.3],
   [1, 0.7],
-  [2, 0.5]
+  [2, 0.5],
 ]);
 
-// Render
 renderer.update(values);
 renderer.render();
 ```
@@ -59,16 +80,20 @@ renderer.render();
 
 ### `Graph`
 
-Represents the graph structure.
+Represents the full graph structure passed to the renderer.
 
 ```typescript
 interface Graph {
   vertices: Vertex[];
+  edges: Edge[];
 }
 ```
 
 **Properties:**
-- `vertices`: Array of vertex objects
+- `vertices`: Array of vertex objects (positions and adjacency)
+- `edges`: Array of edge objects (explicit, with computed lengths)
+
+> **Note:** The graph JSON format uses an adjacency list on vertices only. You must build the `Edge` array before passing the graph to `GraphRenderer.create()`. See the Quick Start above or `main.ts` for reference.
 
 ### `Vertex`
 
@@ -88,6 +113,23 @@ interface Vertex {
 { "index": 5, "x": 1.2, "y": 3.4, "edges": [2, 3, 7] }
 ```
 
+### `Edge`
+
+Represents a single undirected edge between two vertices, with an orientation used for flux sign conventions.
+
+```typescript
+interface Edge {
+  index: number;    // Unique identifier (0-indexed)
+  v1: number;       // Index of the first vertex (flux origin when positive)
+  v2: number;       // Index of the second vertex
+  length?: number;  // Euclidean distance between v1 and v2
+}
+```
+
+**Notes:**
+- `v1` → `v2` defines the positive flux direction. Flux values reported by the solver follow this convention.
+- `length` is optional; the renderer uses it only to position labels and arrows (it reads lengths from `edgeFluxValues` magnitudes, not from `Edge.length` directly).
+
 ### `FunctionValues`
 
 Maps vertex indices to scalar values (the function being visualized).
@@ -105,7 +147,7 @@ values.set(2, 0.8);   // Vertex 2 has value 0.8
 ```
 
 **Notes:**
-- Missing vertices default to 0.5
+- Missing vertex indices default to `0.5` (normalized midpoint)
 - Values are normalized using `nodeMinValue` and `nodeMaxValue`
 
 ### `RenderOptions`
@@ -114,16 +156,16 @@ Configuration for renderer appearance and behavior.
 
 ```typescript
 interface RenderOptions {
-  width?: number;                              // Canvas width (default: 800)
-  height?: number;                             // Canvas height (default: 600)
+  width?: number;                              // Canvas width in pixels (default: 800)
+  height?: number;                             // Canvas height in pixels (default: 600)
   nodeMinSize?: number;                        // Min node radius in pixels (default: 4)
   nodeMaxSize?: number;                        // Max node radius in pixels (default: 20)
   nodeMinValue?: number;                       // Min value for normalization (default: 0)
   nodeMaxValue?: number;                       // Max value for normalization (default: 1)
   colorScale?: (value: number) => number;      // Color function: [0,1] → 0xRRGGBB
-  edgeColor?: number;                          // Edge color as 0xRRGGBB (default: 0x999999)
-  edgeAlpha?: number;                          // Edge opacity [0,1] (default: 0.5)
-  edgeWidth?: number;                          // Edge width in pixels (default: 1)
+  edgeColor?: number;                          // Edge line color as 0xRRGGBB (default: 0x999999)
+  edgeAlpha?: number;                          // Edge line opacity [0,1] (default: 0.5)
+  edgeWidth?: number;                          // Edge line width in pixels (default: 1)
   padding?: number;                            // Canvas margin in pixels (default: 40)
 }
 ```
@@ -146,7 +188,7 @@ static async create(
 
 **Parameters:**
 - `container`: HTMLElement where the canvas will be appended
-- `graph`: Graph structure with vertices and edges
+- `graph`: Graph structure with populated `vertices` and `edges`
 - `options`: Optional rendering configuration (see [RenderOptions](#renderoptions))
 
 **Returns:** Promise resolving to initialized `GraphRenderer`
@@ -168,25 +210,53 @@ const renderer = await GraphRenderer.create(
 
 ### Instance Method: `update()`
 
-Update vertex function values and update node colors/sizes.
+Update vertex function values, and optionally edge flux values, then redraw nodes and overlays.
 
 ```typescript
-update(functionValues: FunctionValues): void
+update(functionValues: FunctionValues, edgeFluxValues?: Map<number, number>): void
 ```
 
 **Parameters:**
-- `functionValues`: Map of vertex index to scalar value
+- `functionValues`: Map of vertex index → scalar value
+- `edgeFluxValues` *(optional)*: Map of edge index → signed flux. When provided, flux arrows and flux magnitude labels on edges are redrawn.
 
 **Notes:**
 - Must call `render()` after to display changes
-- Values are automatically normalized to [0, 1] using `nodeMinValue` and `nodeMaxValue`
-- Missing vertices default to 0.5
+- Vertex values are normalized to [0, 1] using `nodeMinValue` and `nodeMaxValue`
+- Missing vertices default to `0.5`
+- Flux arrows are sized and directed by the magnitude and sign of each edge's flux. Arrows are hidden when `edgeFluxValues` is omitted.
 
 **Example:**
 ```typescript
-const values = new Map([[0, 0.2], [1, 0.8], [2, 0.5]]);
+// Vertex values only
 renderer.update(values);
 renderer.render();
+
+// Vertex values + edge fluxes
+renderer.update(state.currentValues, state.edgeFluxValues);
+renderer.render();
+```
+
+### Instance Method: `setTextLabelsVisible()`
+
+Show or hide all text label overlays (vertex labels and edge flux labels).
+
+```typescript
+setTextLabelsVisible(visible: boolean): void
+```
+
+**Parameters:**
+- `visible`: `true` to show labels, `false` to hide them
+
+**Notes:**
+- Vertex labels display: `<index>: <value>\nin: <inflow>\nout: <outflow>\nnet: <netflow>`
+- Net flow is color-coded: green for positive (net inflow), red for negative (net outflow), dark for zero
+- Edge labels display the flux magnitude as a 3-decimal number, offset perpendicular to the edge
+
+**Example:**
+```typescript
+renderer.setTextLabelsVisible(false); // hide for cleaner screenshots
+renderer.setTextLabelsVisible(true);  // restore
 ```
 
 ### Instance Method: `render()`
@@ -199,7 +269,6 @@ render(): void
 
 **Notes:**
 - Call after `update()` to display changes
-- Uses Pixi.js internal rendering
 
 **Example:**
 ```typescript
@@ -209,7 +278,7 @@ renderer.render();
 
 ### Instance Method: `resize()`
 
-Resize the canvas and re-layout the graph.
+Resize the canvas.
 
 ```typescript
 resize(width: number, height: number): void
@@ -253,7 +322,7 @@ canvas.style.border = '2px solid blue';
 
 ### Instance Property: `ticker`
 
-Access to Pixi.js application ticker for animation loops.
+Access to the Pixi.js application ticker for animation loops.
 
 ```typescript
 ticker: PIXI.Ticker
@@ -262,8 +331,7 @@ ticker: PIXI.Ticker
 **Example:**
 ```typescript
 renderer.ticker.add(() => {
-  // Called every frame
-  renderer.update(newValues);
+  renderer.update(newValues, newFluxes);
   renderer.render();
 });
 ```
@@ -341,14 +409,13 @@ normalized = clamp(normalized, 0, 1)
 
 ### Example 1: Static Visualization
 
-Display a fixed set of values:
+Display a fixed set of values on an already-loaded graph (with edges populated):
 
 ```typescript
 import { GraphRenderer } from "./render/renderer";
 import type { Graph, FunctionValues } from "./types";
 
-async function visualizeStatic() {
-  const graph = await fetch('graph.json').then(r => r.json());
+async function visualizeStatic(graph: Graph) {
   const container = document.getElementById('app')!;
   
   const renderer = await GraphRenderer.create(container, graph, {
@@ -364,17 +431,14 @@ async function visualizeStatic() {
   renderer.update(values);
   renderer.render();
 }
-
-visualizeStatic();
 ```
 
 ### Example 2: Animated Visualization
 
-Update values continuously:
+Update values continuously using the ticker:
 
 ```typescript
-async function visualizeAnimated() {
-  const graph = await fetch('graph.json').then(r => r.json());
+async function visualizeAnimated(graph: Graph) {
   const container = document.getElementById('app')!;
   
   const renderer = await GraphRenderer.create(container, graph);
@@ -385,9 +449,8 @@ async function visualizeAnimated() {
   renderer.ticker.add(() => {
     time += 0.016; // ~60fps
 
-    // Update values based on time
     for (const vertex of graph.vertices) {
-      const wave = Math.sin(vertex.x * 5 - time * 2);
+      const wave = 0.5 + 0.5 * Math.sin(vertex.x * 5 - time * 2);
       values.set(vertex.index, wave);
     }
 
@@ -395,129 +458,74 @@ async function visualizeAnimated() {
     renderer.render();
   });
 }
-
-visualizeAnimated();
 ```
 
-### Example 3: Integration with Simulation
+### Example 3: Integration with DiffusionSolver
 
-Typical usage pattern with a simulation library:
+The `update()` method accepts an optional second argument for edge fluxes. Pass `state.edgeFluxValues` from the solver to enable the directed flux arrow overlay:
 
 ```typescript
 import { GraphRenderer } from "./render/renderer";
-import { MySimulator } from "./simulator"; // Your simulation library
+import { DiffusionSolver } from "./simulation/diffusionSolver";
 import type { Graph, FunctionValues } from "./types";
 
-async function runSimulation() {
-  // Load graph and create renderer
-  const graph = await fetch('graph.json').then(r => r.json());
+async function runSimulation(graph: Graph, initialValues: FunctionValues) {
   const container = document.getElementById('app')!;
   
   const renderer = await GraphRenderer.create(container, graph, {
-    nodeMinValue: -1,
-    nodeMaxValue: 1,
-    nodeMinSize: 6,
-    nodeMaxSize: 20
+    nodeMinValue: 0,
+    nodeMaxValue: 10,
+    nodeMinSize: 5,
+    nodeMaxSize: 25,
   });
 
-  // Initialize simulator
-  const simulator = new MySimulator(graph);
+  const solver = new DiffusionSolver(graph, {
+    diffusionRate: 0.5,
+    timeStep: 0.01,
+    iterations: 1000,
+    initialValues,
+  });
 
-  // Animation loop: simulation → visualization
   renderer.ticker.add(() => {
-    // Step the simulation
-    simulator.timestep();
-
-    // Get current state from simulator
-    const state = simulator.getState(); // Returns FunctionValues
-
-    // Visualize
-    renderer.update(state);
+    solver.timestep();
+    const state = solver.getState();
+    renderer.update(state.currentValues, state.edgeFluxValues);
     renderer.render();
   });
 }
-
-runSimulation();
 ```
 
-### Example 4: Custom Coloring
+### Example 4: Custom Color Scale
 
-Define a custom color scale:
+Provide your own color function mapping normalized [0, 1] values to `0xRRGGBB`:
 
 ```typescript
-const viridis = (value: number): number => {
-  // Approximate viridis colormap
+const customColorScale = (value: number): number => {
   const v = Math.max(0, Math.min(1, value));
-  
-  let r, g, b;
-  if (v < 0.25) {
-    r = 0;
-    g = Math.round(255 * (v / 0.25));
-    b = Math.round(255);
-  } else if (v < 0.5) {
-    r = 0;
-    g = 255;
-    b = Math.round(255 * (1 - (v - 0.25) / 0.25));
-  } else if (v < 0.75) {
-    r = Math.round(255 * ((v - 0.5) / 0.25));
-    g = 255;
-    b = 0;
-  } else {
-    r = 255;
-    g = Math.round(255 * (1 - (v - 0.75) / 0.25));
-    b = 0;
-  }
-  
+  const r = Math.round(255 * v);
+  const g = Math.round(128 * (1 - Math.abs(v - 0.5) * 2));
+  const b = Math.round(255 * (1 - v));
   return (r << 16) | (g << 8) | b;
 };
 
 const renderer = await GraphRenderer.create(container, graph, {
-  colorScale: viridis,
-  nodeMinValue: 0,
-  nodeMaxValue: 100
+  colorScale: customColorScale,
+  nodeMinValue: -2,
+  nodeMaxValue: 2
 });
 ```
 
-### Example 5: Interactive Node Size Control
+### Example 5: Toggling Labels
 
-Adjust node sizing dynamically:
+Hide labels for a cleaner view, then restore on demand:
 
 ```typescript
-async function interactiveVisualization() {
-  const graph = await fetch('graph.json').then(r => r.json());
-  const container = document.getElementById('app')!;
+const renderer = await GraphRenderer.create(container, graph);
 
-  // Create with initial sizes
-  const renderer = await GraphRenderer.create(container, graph, {
-    nodeMinSize: 5,
-    nodeMaxSize: 15
-  });
-
-  const values = new Map<number, number>();
-  for (let i = 0; i < graph.vertices.length; i++) {
-    values.set(i, Math.random());
-  }
-
-  // Update on slider input
-  const slider = document.getElementById('size-slider') as HTMLInputElement;
-  slider?.addEventListener('input', () => {
-    const maxSize = parseInt(slider.value);
-    
-    // Recreate renderer with new size range
-    renderer.destroy();
-    
-    const newRenderer = await GraphRenderer.create(container, graph, {
-      nodeMinSize: 3,
-      nodeMaxSize: maxSize
-    });
-    
-    newRenderer.update(values);
-    newRenderer.render();
-  });
-
-  renderer.update(values);
-  renderer.render();
-}
+const toggle = document.getElementById('label-toggle') as HTMLInputElement;
+toggle.addEventListener('change', () => {
+  renderer.setTextLabelsVisible(toggle.checked);
+});
 ```
 
 ---
@@ -539,23 +547,23 @@ renderer.render();
 const renderer = await GraphRenderer.create(container, graph);
 
 renderer.ticker.add(() => {
-  // Your logic here
   const newValues = computeValues();
   renderer.update(newValues);
   renderer.render();
 });
 ```
 
-### Pattern 3: Simulation Integration
+### Pattern 3: Simulation Integration (with flux overlay)
 
 ```typescript
 const renderer = await GraphRenderer.create(container, graph);
-const sim = new Simulator(graph);
+const sim = new DiffusionSolver(graph, params);
 
 renderer.ticker.add(() => {
-  sim.step();  // Update simulation state
+  sim.timestep();
   const state = sim.getState();
-  renderer.update(state);
+  // Pass edgeFluxValues to render directed flux arrows
+  renderer.update(state.currentValues, state.edgeFluxValues);
   renderer.render();
 });
 ```
@@ -566,9 +574,7 @@ renderer.ticker.add(() => {
 const renderer = await GraphRenderer.create(container, graph);
 
 window.addEventListener('resize', () => {
-  const width = window.innerWidth - 20;
-  const height = window.innerHeight - 20;
-  renderer.resize(width, height);
+  renderer.resize(window.innerWidth - 20, window.innerHeight - 20);
   renderer.render();
 });
 ```
@@ -577,10 +583,10 @@ window.addEventListener('resize', () => {
 
 ## Performance Notes
 
-- **Rendering**: Uses Pixi.js with GPU acceleration
-- **Node limit**: Tested up to 1000 nodes; performance depends on browser
+- **Rendering**: Uses Pixi.js with WebGL/GPU acceleration
+- **Node limit**: Tested up to 1000 nodes; performance depends on browser and GPU
 - **Update frequency**: Call `render()` only after `update()` for best performance
-- **Ticker**: Runs at browser refresh rate (typically 60fps)
+- **Ticker**: Runs at browser refresh rate (typically 60 fps)
 
 ---
 
@@ -589,16 +595,15 @@ window.addEventListener('resize', () => {
 **Nodes appear too small/large:**
 - Adjust `nodeMinSize` and `nodeMaxSize` options
 
-**Colors not visible:**
-- Check `nodeMinValue` and `nodeMaxValue` match your data range
-- Ensure graph values aren't all at same point (try `Math.random()` for testing)
+**Colors not visible or all look the same:**
+- Check that `nodeMinValue` and `nodeMaxValue` bracket your actual data range
+- Ensure values aren't all identical (try `Math.random()` for testing)
 
-**Performance degradation:**
-- Reduce number of vertices
-- Disable transparency on edges (`edgeAlpha: 1`)
-- Monitor canvas size
+**No flux arrows visible:**
+- Confirm you are passing `edgeFluxValues` as the second argument to `update()`
+- Check that flux magnitudes are non-zero (arrows are hidden for `|flux| < 1e-8`)
 
 **Canvas is blank:**
-- Check browser console for errors
-- Verify graph JSON is valid
-- Ensure container element exists
+- Check the browser console for errors
+- Verify the `Graph` object has both `vertices` and `edges` populated
+- Ensure the container element exists in the DOM before calling `GraphRenderer.create()`

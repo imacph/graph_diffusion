@@ -4,6 +4,7 @@ import type { Matrix } from "mathjs";
 export interface solutionState {
     currentValues: FunctionValues;
     previousValues?: FunctionValues;
+    edgeFluxValues: Map<number, number>;
     time: number;
     timeStepCount: number;
 }
@@ -11,19 +12,54 @@ export interface solutionState {
 export class DiffusionSolver {
     private graph: Graph;
     private params: DiffusionParams;
+    private readonly initialValues: FunctionValues;
     private state: solutionState;
     private lhsMatrix: Matrix  // LHS matrix for BDF2 solve: (I + 2/3*h*D*L)
     
     constructor(graph: Graph, params: DiffusionParams) {
         this.graph = graph;
         this.params = params;
+        this.initialValues = new Map(params.initialValues);
         this.state = {
-            currentValues: new Map(params.initialValues),
-            previousValues: new Map(params.initialValues),
+            currentValues: new Map(this.initialValues),
+            previousValues: new Map(this.initialValues),
+            edgeFluxValues: this.computeEdgeFluxValues(new Map(this.initialValues)),
             time: 0,
             timeStepCount: 0
         };
         this.lhsMatrix = this.computeLHS();
+    }
+
+    private toFiniteNumber(value: unknown, fallback = 0): number {
+        if (typeof value === "number" && Number.isFinite(value)) {
+            return value;
+        }
+        if (Array.isArray(value) && value.length > 0) {
+            return this.toFiniteNumber(value[0], fallback);
+        }
+        return fallback;
+    }
+
+    private toSolutionVector(solution: Matrix | number[] | number[][]): number[] {
+        const raw = (Array.isArray(solution) ? solution : solution.toArray()) as Array<number | number[]>;
+        return raw.map((entry) => this.toFiniteNumber(entry, 0));
+    }
+
+    private computeEdgeFluxValues(vertexValues: FunctionValues): Map<number, number> {
+        const D = this.params.diffusionRate;
+        const edgeFluxValues = new Map<number, number>();
+
+        for (const edge of this.graph.edges) {
+            const u1 = this.toFiniteNumber(vertexValues.get(edge.v1), 0);
+            const u2 = this.toFiniteNumber(vertexValues.get(edge.v2), 0);
+            const edgeLength = edge.length ?? 1;
+
+            // Signed flux follows edge orientation v1 -> v2.
+            const flux = D * (u1 - u2) / edgeLength;
+            edgeFluxValues.set(edge.index, flux);
+        }
+
+        return edgeFluxValues;
     }
 
     private computeLHS(): Matrix {
@@ -52,7 +88,7 @@ export class DiffusionSolver {
     }
 
     public timestep(): void {
-        const uCurrentArray = this.graph.vertices.map(v => this.state.currentValues.get(v.index) ?? 0);
+        const uCurrentArray = this.graph.vertices.map(v => this.toFiniteNumber(this.state.currentValues.get(v.index), 0));
         
         let uNextArray: number[];
         
@@ -69,27 +105,17 @@ export class DiffusionSolver {
                 math.multiply(h * D, L)
             ) as Matrix;
             
-            const uNext = math.lusolve(lhs, uCurrentArray);
-            uNextArray = (Array.isArray(uNext) ? uNext : (uNext as Matrix).toArray() as number[]);
-            
-            console.log(`[Step 0] Initial u:`, uCurrentArray);
-            console.log(`[Step 0] After Euler u:`, uNextArray);
+            const uNext = math.lusolve(lhs, uCurrentArray) as Matrix | number[] | number[][];
+            uNextArray = this.toSolutionVector(uNext);
         } else {
             // BDF2
-            const uPreviousArray = this.graph.vertices.map(v => this.state.previousValues!.get(v.index) ?? 0);
+            const uPreviousArray = this.graph.vertices.map(v => this.toFiniteNumber(this.state.previousValues!.get(v.index), 0));
             
             // RHS = 4/3 * u_n - 1/3 * u_{n-1}
             const rhs = uCurrentArray.map((u, i) => (4/3) * u - (1/3) * uPreviousArray[i]);
             
-            const uNext = math.lusolve(this.lhsMatrix, rhs);
-            uNextArray = (Array.isArray(uNext) ? uNext : (uNext as Matrix).toArray() as number[]);
-            
-            if (this.state.timeStepCount % 10 === 1) {
-                console.log(`[Step ${this.state.timeStepCount}] u_n:`, uCurrentArray.slice(0, 3));
-                console.log(`[Step ${this.state.timeStepCount}] u_n-1:`, uPreviousArray.slice(0, 3));
-                console.log(`[Step ${this.state.timeStepCount}] RHS:`, rhs.slice(0, 3));
-                console.log(`[Step ${this.state.timeStepCount}] u_next:`, uNextArray.slice(0, 3));
-            }
+            const uNext = math.lusolve(this.lhsMatrix, rhs) as Matrix | number[] | number[][];
+            uNextArray = this.toSolutionVector(uNext);
         }
 
         // Update state
@@ -97,9 +123,18 @@ export class DiffusionSolver {
         this.state.currentValues = new Map(
             this.graph.vertices.map((v, i) => [v.index, uNextArray[i]])
         );
+        this.state.edgeFluxValues = this.computeEdgeFluxValues(this.state.currentValues);
 
         this.state.time += this.params.timeStep;
         this.state.timeStepCount += 1;
+    }
+
+    public reset(): void {
+        this.state.currentValues = new Map(this.initialValues);
+        this.state.previousValues = new Map(this.initialValues);
+        this.state.edgeFluxValues = this.computeEdgeFluxValues(this.state.currentValues);
+        this.state.time = 0;
+        this.state.timeStepCount = 0;
     }
 
     private computeLaplacian(): Matrix {

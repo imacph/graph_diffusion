@@ -33,9 +33,15 @@ export class GraphRenderer {
 
   // Node graphics (one per vertex)
   private nodeGraphics: Map<number, PIXI.Graphics>;
+  private vertexTextGraphics: Map<number, PIXI.Text>;
+  private edgeTextGraphics: Map<number, PIXI.Text>;
+  private edgeArrowGraphics: Map<number, PIXI.Graphics>;
 
   // Current function values
   private functionValues: FunctionValues;
+  private edgeFluxValues: Map<number, number>;
+  private vertexByIndex: Map<number, Graph["vertices"][number]>;
+  private textLabelsVisible: boolean;
 
   // Coordinate bounds for scaling
   private boundsX: [number, number] = [0, 1];
@@ -58,7 +64,13 @@ export class GraphRenderer {
     this.graph = graph;
     this.options = { ...DEFAULT_RENDER_OPTIONS, ...options };
     this.nodeGraphics = new Map();
+    this.vertexTextGraphics = new Map();
+    this.edgeTextGraphics = new Map();
+    this.edgeArrowGraphics = new Map();
     this.functionValues = new Map();
+    this.edgeFluxValues = new Map();
+    this.vertexByIndex = new Map(graph.vertices.map((vertex) => [vertex.index, vertex]));
+    this.textLabelsVisible = true;
 
     // Compute bounds from graph vertices
     this.computeBounds();
@@ -92,8 +104,13 @@ export class GraphRenderer {
   /**
    * Update function values and re-render nodes
    */
-  public update(functionValues: FunctionValues): void {
+  public update(functionValues: FunctionValues, edgeFluxValues?: Map<number, number>): void {
     this.functionValues = functionValues;
+    if (edgeFluxValues) {
+      this.edgeFluxValues = edgeFluxValues;
+      this.updateEdgeFluxLabels();
+      this.updateEdgeFluxArrows();
+    }
     this.updateNodes();
   }
 
@@ -134,6 +151,16 @@ export class GraphRenderer {
     this.options.height = height;
   }
 
+  public setTextLabelsVisible(visible: boolean): void {
+    this.textLabelsVisible = visible;
+    for (const label of this.edgeTextGraphics.values()) {
+      label.visible = visible;
+    }
+    for (const label of this.vertexTextGraphics.values()) {
+      label.visible = visible;
+    }
+  }
+
   // ========== Private Methods ==========
 
   private computeBounds(): void {
@@ -172,6 +199,16 @@ export class GraphRenderer {
     return [screenX, screenY];
   }
 
+  private toFiniteNumber(value: unknown, fallback = 0): number {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+    if (Array.isArray(value) && value.length > 0) {
+      return this.toFiniteNumber(value[0], fallback);
+    }
+    return fallback;
+  }
+
   private renderEdges(): void {
     const edges = new PIXI.Graphics();
     edges.setStrokeStyle({
@@ -180,29 +217,43 @@ export class GraphRenderer {
       alpha: this.options.edgeAlpha,
     });
 
-    const drawnEdges = new Set<string>();
+    for (const edge of this.graph.edges) {
+      const v1 = this.vertexByIndex.get(edge.v1);
+      const v2 = this.vertexByIndex.get(edge.v2);
+      if (!v1 || !v2) continue;
 
-    for (const vertex of this.graph.vertices) {
-      const [x1, y1] = this.worldToScreen(vertex.x, vertex.y);
+      const [x1, y1] = this.worldToScreen(v1.x, v1.y);
+      const [x2, y2] = this.worldToScreen(v2.x, v2.y);
 
-      for (const neighborIdx of vertex.edges) {
-        // Avoid drawing edges twice
-        const edgeKey = [vertex.index, neighborIdx].sort().join("-");
-        if (drawnEdges.has(edgeKey)) continue;
-        drawnEdges.add(edgeKey);
+      edges.moveTo(x1, y1);
+      edges.lineTo(x2, y2);
+      edges.stroke();
 
-        const neighbor = this.graph.vertices[neighborIdx];
-        if (!neighbor) continue;
+      const edgeLabel = new PIXI.Text({
+        text: "0.000",
+        style: {
+          fontFamily: "Courier New",
+          fontSize: 11,
+          fill: 0x1f2937,
+          stroke: {
+            color: 0xffffff,
+            width: 3,
+          },
+        },
+      });
+      edgeLabel.anchor.set(0.5);
+      edgeLabel.visible = this.textLabelsVisible;
+      this.edgeTextGraphics.set(edge.index, edgeLabel);
+      this.edgesLayer.addChild(edgeLabel);
 
-        const [x2, y2] = this.worldToScreen(neighbor.x, neighbor.y);
-
-        edges.moveTo(x1, y1);
-        edges.lineTo(x2, y2);
-        edges.stroke();
-      }
+      const edgeArrow = new PIXI.Graphics();
+      this.edgeArrowGraphics.set(edge.index, edgeArrow);
+      this.edgesLayer.addChild(edgeArrow);
     }
 
     this.edgesLayer.addChild(edges);
+    this.updateEdgeFluxLabels();
+    this.updateEdgeFluxArrows();
   }
 
   private renderNodes(): void {
@@ -214,16 +265,35 @@ export class GraphRenderer {
 
       this.nodeGraphics.set(vertex.index, nodeGfx);
       this.nodesLayer.addChild(nodeGfx);
+
+      const vertexLabel = new PIXI.Text({
+        text: "0.000",
+        style: {
+          fontFamily: "Courier New",
+          fontSize: 11,
+          fill: 0x1f2937,
+          stroke: {
+            color: 0xffffff,
+            width: 3,
+          },
+        },
+      });
+      vertexLabel.anchor.set(0.5);
+      vertexLabel.visible = this.textLabelsVisible;
+      this.vertexTextGraphics.set(vertex.index, vertexLabel);
+      this.nodesLayer.addChild(vertexLabel);
     }
   }
 
   private updateNodes(): void {
+    const vertexFlowSummary = this.computeVertexFlowSummary();
+
     for (const vertex of this.graph.vertices) {
       const nodeGfx = this.nodeGraphics.get(vertex.index);
       if (!nodeGfx) continue;
 
       // Get function value (default to 0.5 if not set)
-      const value = this.functionValues.get(vertex.index) ?? 0.5;
+      const value = this.toFiniteNumber(this.functionValues.get(vertex.index), 0.5);
 
       // Normalize value to [0, 1]
       const minVal = this.options.nodeMinValue ?? 0;
@@ -249,6 +319,148 @@ export class GraphRenderer {
         alpha: 0.8,
       });
       nodeGfx.stroke();
+
+      const label = this.vertexTextGraphics.get(vertex.index);
+      if (!label) continue;
+      const flow = vertexFlowSummary.get(vertex.index) ?? { in: 0, out: 0, net: 0 };
+      label.text = `${vertex.index}: ${value.toFixed(3)}\nin: ${flow.in.toFixed(3)}\nout: ${flow.out.toFixed(3)}\nnet: ${flow.net.toFixed(3)}`;
+      const netFlow = flow.net;
+      if (Math.abs(netFlow) < 1e-9) {
+        label.style.fill = 0x1f2937;
+      } else {
+        label.style.fill = netFlow > 0 ? 0x166534 : 0xb91c1c;
+      }
+      label.position.set(nodeGfx.position.x, nodeGfx.position.y - (size + 34));
+    }
+  }
+
+  private computeVertexFlowSummary(): Map<number, { in: number; out: number; net: number }> {
+    const flowByVertex = new Map<number, { in: number; out: number; net: number }>();
+
+    for (const vertex of this.graph.vertices) {
+      flowByVertex.set(vertex.index, { in: 0, out: 0, net: 0 });
+    }
+
+    for (const edge of this.graph.edges) {
+      const flux = this.toFiniteNumber(this.edgeFluxValues.get(edge.index), 0);
+      const magnitude = Math.abs(flux);
+      const v1Flow = flowByVertex.get(edge.v1);
+      const v2Flow = flowByVertex.get(edge.v2);
+      if (!v1Flow || !v2Flow) continue;
+
+      if (flux >= 0) {
+        v1Flow.out += magnitude;
+        v2Flow.in += magnitude;
+      } else {
+        v2Flow.out += magnitude;
+        v1Flow.in += magnitude;
+      }
+    }
+
+    for (const flow of flowByVertex.values()) {
+      flow.net = flow.in - flow.out;
+    }
+
+    return flowByVertex;
+  }
+
+  private updateEdgeFluxLabels(): void {
+    for (const edge of this.graph.edges) {
+      const label = this.edgeTextGraphics.get(edge.index);
+      if (!label) continue;
+
+      const v1 = this.vertexByIndex.get(edge.v1);
+      const v2 = this.vertexByIndex.get(edge.v2);
+      if (!v1 || !v2) continue;
+
+      const [x1, y1] = this.worldToScreen(v1.x, v1.y);
+      const [x2, y2] = this.worldToScreen(v2.x, v2.y);
+
+      const midX = 0.5 * (x1 + x2);
+      const midY = 0.5 * (y1 + y2);
+      const dx = x2 - x1;
+      const dy = y2 - y1;
+      const length = Math.hypot(dx, dy) || 1;
+
+      // Offset label normal to edge to reduce overlap with edge line.
+      const normalX = -dy / length;
+      const normalY = dx / length;
+      label.position.set(midX + 10 * normalX, midY + 10 * normalY);
+
+      const flux = this.edgeFluxValues.get(edge.index) ?? 0;
+      label.text = Math.abs(flux).toFixed(3);
+      label.style.fill = 0x1f2937;
+    }
+  }
+
+  private updateEdgeFluxArrows(): void {
+    let maxAbsFlux = 0;
+    for (const flux of this.edgeFluxValues.values()) {
+      maxAbsFlux = Math.max(maxAbsFlux, Math.abs(flux));
+    }
+    const denom = maxAbsFlux > 1e-12 ? maxAbsFlux : 1;
+
+    for (const edge of this.graph.edges) {
+      const arrow = this.edgeArrowGraphics.get(edge.index);
+      if (!arrow) continue;
+
+      const v1 = this.vertexByIndex.get(edge.v1);
+      const v2 = this.vertexByIndex.get(edge.v2);
+      if (!v1 || !v2) continue;
+
+      const [x1, y1] = this.worldToScreen(v1.x, v1.y);
+      const [x2, y2] = this.worldToScreen(v2.x, v2.y);
+
+      const flux = this.edgeFluxValues.get(edge.index) ?? 0;
+      const absFlux = Math.abs(flux);
+      const normalized = Math.max(0, Math.min(1, absFlux / denom));
+
+      const fromX = flux >= 0 ? x1 : x2;
+      const fromY = flux >= 0 ? y1 : y2;
+      const toX = flux >= 0 ? x2 : x1;
+      const toY = flux >= 0 ? y2 : y1;
+
+      const dx = toX - fromX;
+      const dy = toY - fromY;
+      const edgeLength = Math.hypot(dx, dy) || 1;
+      const dirX = dx / edgeLength;
+      const dirY = dy / edgeLength;
+
+      // Keep arrow centered on edge while showing orientation and strength.
+      const midX = 0.5 * (fromX + toX);
+      const midY = 0.5 * (fromY + toY);
+      const arrowLength = 10 + 22 * normalized;
+      const halfArrow = 0.5 * arrowLength;
+      const startX = midX - dirX * halfArrow;
+      const startY = midY - dirY * halfArrow;
+      const endX = midX + dirX * halfArrow;
+      const endY = midY + dirY * halfArrow;
+
+      const color = 0x374151;
+      const alpha = 0.35 + 0.65 * normalized;
+      const lineWidth = 1 + 2 * normalized;
+      const headSize = 4 + 6 * normalized;
+
+      arrow.clear();
+      if (absFlux < 1e-8) {
+        continue;
+      }
+
+      arrow.setStrokeStyle({ width: lineWidth, color, alpha });
+      arrow.moveTo(startX, startY);
+      arrow.lineTo(endX, endY);
+      arrow.stroke();
+
+      const leftX = endX - dirX * headSize - dirY * (0.6 * headSize);
+      const leftY = endY - dirY * headSize + dirX * (0.6 * headSize);
+      const rightX = endX - dirX * headSize + dirY * (0.6 * headSize);
+      const rightY = endY - dirY * headSize - dirX * (0.6 * headSize);
+
+      arrow.moveTo(endX, endY);
+      arrow.lineTo(leftX, leftY);
+      arrow.lineTo(rightX, rightY);
+      arrow.closePath();
+      arrow.fill({ color, alpha });
     }
   }
 }
