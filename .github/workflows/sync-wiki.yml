@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'docs/**'
+      - 'README.md'
       - '.github/workflows/sync-wiki.yml'
 
 jobs:
@@ -13,9 +14,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Sync docs to wiki
+      - name: Stage wiki content
+        run: |
+          mkdir wiki-content
+          cp docs/* wiki-content/
+          cp README.md wiki-content/Home.md
+
+      - name: Sync to wiki
         uses: Andrew-Chen-Wang/github-wiki-action@v4
         with:
-          path: docs/
+          path: wiki-content/
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
