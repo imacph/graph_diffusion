@@ -89,6 +89,8 @@ export class GraphRenderer {
       height: this.options.height,
       backgroundColor: 0xffffff,
       antialias: true,
+      resolution: window.devicePixelRatio || 1,
+      autoDensity: true,
     });
 
     container.appendChild(this.app.canvas);

@@ -199,7 +199,7 @@ const renderer = await GraphRenderer.create(
   document.getElementById('app')!,
   graph,
   {
-    width: 1000,
+    width: 1200,
     height: 800,
     nodeMinSize: 8,
     nodeMaxSize: 24,
