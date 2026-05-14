@@ -1,5 +1,6 @@
 import type { GraphRenderer } from "../render/renderer";
 import type { DiffusionSolver } from "../simulation/diffusionSolver";
+import { createViewControlsPanel } from "./viewControls";
 
 export function setupUI(
   container: HTMLElement,
@@ -18,30 +19,11 @@ export function setupUI(
   } else {
     canvasShell = document.createElement("div");
     canvasShell.className = "canvas-shell";
-    canvasShell.style.width = `${canvas.clientWidth || canvas.width}px`;
-    canvasShell.style.height = `${canvas.clientHeight || canvas.height}px`;
     container.insertBefore(canvasShell, canvas);
     canvasShell.appendChild(canvas);
   }
 
-  const labelsToggleWrap = document.createElement("label");
-  labelsToggleWrap.className = "labels-toggle";
-
-  const labelsToggleInput = document.createElement("input");
-  labelsToggleInput.type = "checkbox";
-  labelsToggleInput.checked = true;
-
-  const labelsToggleText = document.createElement("span");
-  labelsToggleText.textContent = "Show text labels";
-
-  labelsToggleWrap.append(labelsToggleInput, labelsToggleText);
-  canvasShell.appendChild(labelsToggleWrap);
-
-  renderer.setTextLabelsVisible(labelsToggleInput.checked);
-  const handleLabelsToggleChange = () => {
-    renderer.setTextLabelsVisible(labelsToggleInput.checked);
-  };
-  labelsToggleInput.addEventListener("change", handleLabelsToggleChange);
+  const viewControls = createViewControlsPanel(canvasShell, renderer);
 
   const simControls = document.createElement("div");
   simControls.className = "sim-controls";
@@ -112,11 +94,10 @@ export function setupUI(
   return {
     teardown() {
       renderer.ticker.remove(tick);
-      labelsToggleInput.removeEventListener("change", handleLabelsToggleChange);
+      viewControls.teardown();
       playPauseButton.removeEventListener("click", handlePlayPauseClick);
       resetButton.removeEventListener("click", handleResetClick);
       simControls.remove();
-      labelsToggleWrap.remove();
     },
   };
 }

@@ -1,4 +1,4 @@
-# Graph Renderer - API Documentation
+# Graph Renderer - Library Documentation
 
 A TypeScript rendering library for visualizing scalar functions on graph structures. Built on Pixi.js v8 for GPU-accelerated rendering. Designed to integrate with simulation libraries that compute discrete differential equations on graphs.
 
@@ -8,11 +8,49 @@ A TypeScript rendering library for visualizing scalar functions on graph structu
 - Per-vertex text labels: current value, inflow, outflow, net flow
 - Per-edge text labels: flux magnitude
 - Toggleable text label overlay
+- Spatial grid overlay with world-coordinate cell sizing
+- Dark mode
+
+**Navigation features:**
+- Mouse-wheel zoom toward cursor
+- Middle-click or right-click drag to pan
+- Coordinate conversion between world space, local (canvas-pixel) space, and screen space
+
+**Graph editing features:**
+- Add and remove vertices and edges at runtime
+- Reposition vertices
+- Editor mode that suppresses left-drag pan to allow node dragging
 
 ## Table of Contents
 - [Quick Start](#quick-start)
 - [Data Types](#data-types)
-- [GraphRenderer API](#graphrenderer-api)
+- [GraphRenderer Reference](#graphrenderer-reference)
+  - [GraphRenderer.create()](#static-method-graphrenderercreate)
+  - [update()](#instance-method-update)
+  - [render()](#instance-method-render)
+  - [setTextLabelsVisible()](#instance-method-settextlabelsvisible)
+  - [getTextLabelsVisible()](#instance-method-gettextlabelsvisible)
+  - [setValueRange()](#instance-method-setvaluerange)
+  - [getValueRange()](#instance-method-getvaluerange)
+  - [setDarkMode()](#instance-method-setdarkmode)
+  - [setGridVisible()](#instance-method-setgridvisible)
+  - [setGridSize()](#instance-method-setgridsize)
+  - [getGridVisible()](#instance-method-getgridvisible)
+  - [getGridCellSize()](#instance-method-getgridcellsize)
+  - [setEditorMode()](#instance-method-seteditormode)
+  - [addVertex()](#instance-method-addvertex)
+  - [removeVertex()](#instance-method-removevertex)
+  - [addEdge()](#instance-method-addedge)
+  - [removeEdge()](#instance-method-removeedge)
+  - [setVertexPosition()](#instance-method-setvertexposition)
+  - [worldToScreen()](#instance-method-worldtoscreen)
+  - [screenToWorld()](#instance-method-screentoworld)
+  - [getWorldBounds()](#instance-method-getworldbounds)
+  - [getCanvas()](#instance-method-getcanvas)
+  - [ticker](#instance-property-ticker)
+  - [resize()](#instance-method-resize)
+  - [destroy()](#instance-method-destroy)
+  - [Callbacks](#callbacks)
 - [RenderOptions](#renderoptions)
 - [Examples](#examples)
 - [Integration Patterns](#integration-patterns)
@@ -172,7 +210,7 @@ interface RenderOptions {
 
 ---
 
-## GraphRenderer API
+## GraphRenderer Reference
 
 ### Static Method: `GraphRenderer.create()`
 
@@ -250,7 +288,7 @@ setTextLabelsVisible(visible: boolean): void
 
 **Notes:**
 - Vertex labels display: `<index>: <value>\nin: <inflow>\nout: <outflow>\nnet: <netflow>`
-- Net flow is color-coded: green for positive (net inflow), red for negative (net outflow), dark for zero
+- Net flow is color-coded: green for positive (net inflow), red for negative (net outflow), neutral for zero
 - Edge labels display the flux magnitude as a 3-decimal number, offset perpendicular to the edge
 
 **Example:**
@@ -258,6 +296,252 @@ setTextLabelsVisible(visible: boolean): void
 renderer.setTextLabelsVisible(false); // hide for cleaner screenshots
 renderer.setTextLabelsVisible(true);  // restore
 ```
+
+### Instance Method: `getTextLabelsVisible()`
+
+Return the current visibility state of text labels.
+
+```typescript
+getTextLabelsVisible(): boolean
+```
+
+---
+
+### Instance Method: `setValueRange()`
+
+Update the value range used to normalize vertex values for color and size mapping. Takes effect immediately without needing a separate `render()` call.
+
+```typescript
+setValueRange(min: number, max: number): void
+```
+
+**Parameters:**
+- `min`: Value mapped to the bottom of the color/size scale
+- `max`: Value mapped to the top of the color/size scale
+
+**Notes:**
+- Equivalent to changing `nodeMinValue` / `nodeMaxValue` at construction time, but live
+- `min` must be strictly less than `max`; no validation is performed internally
+
+**Example:**
+```typescript
+// Rescale to show fine detail in a narrow band
+renderer.setValueRange(0.4, 0.6);
+```
+
+### Instance Method: `getValueRange()`
+
+Return the current value normalization range.
+
+```typescript
+getValueRange(): { min: number; max: number }
+```
+
+---
+
+### Instance Method: `setDarkMode()`
+
+Switch between light and dark color schemes. Rebuilds all text objects (whose styles are baked at creation time) and redraws the scene.
+
+```typescript
+setDarkMode(enabled: boolean): void
+```
+
+**Parameters:**
+- `enabled`: `true` for dark mode, `false` for light mode
+
+**Light scheme:** white background, gray edges, dark labels, green/red flow colors, light gray grid  
+**Dark scheme:** `#111827` background, lighter edges, near-white labels, bright green/red flow colors, mid-gray grid
+
+---
+
+### Instance Method: `setGridVisible()`
+
+Show or hide the spatial grid overlay.
+
+```typescript
+setGridVisible(visible: boolean): void
+```
+
+### Instance Method: `setGridSize()`
+
+Set the grid cell size in **world coordinate units** (not pixels). The grid redraws immediately.
+
+```typescript
+setGridSize(size: number): void
+```
+
+**Notes:**
+- Grid lines are drawn at multiples of `size` in world space, so they maintain consistent physical spacing regardless of zoom level.
+- A reasonable default is `worldSpan / 10`.
+
+**Example:**
+```typescript
+renderer.setGridVisible(true);
+renderer.setGridSize(0.5); // one grid line every 0.5 world units
+```
+
+### Instance Method: `getGridVisible()`
+
+```typescript
+getGridVisible(): boolean
+```
+
+### Instance Method: `getGridCellSize()`
+
+```typescript
+getGridCellSize(): number
+```
+
+---
+
+### Instance Method: `setEditorMode()`
+
+Enable or disable editor mode. In editor mode, left-click drag on the canvas does **not** pan the camera (so left-drag can be used for node dragging). In simulation mode (editor mode disabled), left-click drag pans.
+
+```typescript
+setEditorMode(enabled: boolean): void
+```
+
+---
+
+### Instance Method: `addVertex()`
+
+Add a new vertex to the live scene.
+
+```typescript
+addVertex(vertex: Vertex): void
+```
+
+**Parameters:**
+- `vertex`: A `Vertex` object with `index`, `x`, `y`, and `edges` fields. The `edges` array is used for display only; the renderer does not validate adjacency.
+
+**Notes:**
+- The vertex is rendered immediately.
+- Call `render()` after if not using the ticker.
+
+### Instance Method: `removeVertex()`
+
+Remove a vertex and all incident edges from the scene.
+
+```typescript
+removeVertex(index: number): void
+```
+
+### Instance Method: `addEdge()`
+
+Add a new edge to the live scene.
+
+```typescript
+addEdge(edge: Edge): void
+```
+
+### Instance Method: `removeEdge()`
+
+Remove an edge from the scene by its index.
+
+```typescript
+removeEdge(index: number): void
+```
+
+### Instance Method: `setVertexPosition()`
+
+Move a vertex to a new world-coordinate position. Updates the vertex in the internal graph state and redraws incident edges.
+
+```typescript
+setVertexPosition(index: number, worldX: number, worldY: number): void
+```
+
+---
+
+### Instance Method: `worldToScreen()`
+
+Convert a world-coordinate point to screen (canvas CSS pixel) coordinates, accounting for the current camera position and zoom.
+
+```typescript
+worldToScreen(x: number, y: number): [number, number]
+```
+
+**Returns:** `[screenX, screenY]` in canvas CSS pixel space.
+
+**Use case:** Positioning HTML overlay elements (tooltips, labels) on top of graph nodes.
+
+```typescript
+const [sx, sy] = renderer.worldToScreen(vertex.x, vertex.y);
+tooltip.style.left = `${sx + 12}px`;
+tooltip.style.top  = `${sy + 12}px`;
+```
+
+### Instance Method: `screenToWorld()`
+
+Convert a canvas CSS pixel coordinate back to world space.
+
+```typescript
+screenToWorld(screenX: number, screenY: number): [number, number]
+```
+
+**Use case:** Converting a pointer event position into a world-coordinate location for node placement or hit testing.
+
+```typescript
+canvas.addEventListener('click', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const [wx, wy] = renderer.screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
+  console.log('Clicked at world', wx, wy);
+});
+```
+
+### Instance Method: `getWorldBounds()`
+
+Return the axis-aligned bounding box of all vertices in world coordinates.
+
+```typescript
+getWorldBounds(): { minX: number; maxX: number; minY: number; maxY: number }
+```
+
+**Use case:** Computing a sensible default grid cell size or zoom-to-fit behavior.
+
+```typescript
+const wb = renderer.getWorldBounds();
+const span = Math.max(wb.maxX - wb.minX, wb.maxY - wb.minY);
+renderer.setGridSize(span / 10);
+```
+
+---
+
+### Callbacks
+
+The renderer exposes three public callback fields that the UI layer can assign to hook into renderer events.
+
+#### `onNodePointerDown`
+
+Called when the user presses a pointer button on a node (left button only).
+
+```typescript
+onNodePointerDown: ((vertexIndex: number, screenX: number, screenY: number) => void) | null
+```
+
+#### `onCanvasPointerDown`
+
+Called when the user presses the pointer on the canvas background (not on a node).
+
+```typescript
+onCanvasPointerDown: ((worldX: number, worldY: number) => void) | null
+```
+
+#### `onCameraChange`
+
+Called whenever the camera is updated (zoom or pan). Use this to dismiss UI overlays that track world positions.
+
+```typescript
+onCameraChange: (() => void) | null
+```
+
+**Example:**
+```typescript
+renderer.onCameraChange = () => tooltip.hidden = true;
+```
+
+---
 
 ### Instance Method: `render()`
 

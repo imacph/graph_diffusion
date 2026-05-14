@@ -30,8 +30,47 @@ export class GraphRenderer {
   private options: RenderOptions;
 
   // Graphics layers
+  private graphContainer: PIXI.Container;
   private edgesLayer: PIXI.Container;
   private nodesLayer: PIXI.Container;
+
+  // Camera state
+  private camera = { x: 0, y: 0, zoom: 1 };
+  private panState = { active: false, lastX: 0, lastY: 0 };
+
+  // Grid state
+  private gridLayer: PIXI.Graphics;
+  private gridVisible = false;
+  private gridCellSize = 60;
+  private isDarkMode = false;
+
+  private get scheme() {
+    return this.isDarkMode ? {
+      background: 0x111827,
+      edgeColor: 0x6b7280,
+      edgeAlpha: 0.7,
+      arrowColor: 0xd1d5db,
+      nodeStrokeColor: 0x9ca3af,
+      nodeStrokeAlpha: 0.9,
+      labelFill: 0xf9fafb,
+      labelStroke: 0x111827,
+      flowPositiveFill: 0x4ade80,
+      flowNegativeFill: 0xf87171,
+      gridColor: 0x4b5563,
+    } : {
+      background: 0xffffff,
+      edgeColor: 0x999999,
+      edgeAlpha: 0.5,
+      arrowColor: 0x374151,
+      nodeStrokeColor: 0x333333,
+      nodeStrokeAlpha: 0.8,
+      labelFill: 0x1f2937,
+      labelStroke: 0xffffff,
+      flowPositiveFill: 0x166534,
+      flowNegativeFill: 0xb91c1c,
+      gridColor: 0xd1d5db,
+    };
+  }
 
   // Node graphics (one per vertex)
   private nodeGraphics: Map<number, PIXI.Graphics>;
@@ -49,6 +88,7 @@ export class GraphRenderer {
 
   public onNodePointerDown: ((vertexIndex: number, screenX: number, screenY: number) => void) | null;
   public onCanvasPointerDown: ((worldX: number, worldY: number) => void) | null;
+  public onCameraChange: (() => void) | null = null;
 
   // Coordinate bounds for scaling
   private boundsX: [number, number] = [0, 1];
@@ -90,6 +130,8 @@ export class GraphRenderer {
     this.app = new PIXI.Application();
 
     // Create layers
+    this.graphContainer = new PIXI.Container();
+    this.gridLayer = new PIXI.Graphics();
     this.edgesLayer = new PIXI.Container();
     this.nodesLayer = new PIXI.Container();
   }
@@ -106,8 +148,13 @@ export class GraphRenderer {
 
     container.appendChild(this.app.canvas);
 
-    this.app.stage.addChild(this.edgesLayer);
-    this.app.stage.addChild(this.nodesLayer);
+    this.app.stage.addChild(this.graphContainer);
+    this.graphContainer.addChild(this.gridLayer);
+    this.graphContainer.addChild(this.edgesLayer);
+    this.graphContainer.addChild(this.nodesLayer);
+
+    this.setupCameraEvents();
+    this.applyCamera();
 
     // Render graph structure
     this.renderEdges();
@@ -162,6 +209,7 @@ export class GraphRenderer {
     this.app.renderer.resize(width, height);
     this.options.width = width;
     this.options.height = height;
+    this.redrawGrid();
   }
 
   public setTextLabelsVisible(visible: boolean): void {
@@ -174,10 +222,67 @@ export class GraphRenderer {
     }
   }
 
+  public getTextLabelsVisible(): boolean {
+    return this.textLabelsVisible;
+  }
+
+  public getGridVisible(): boolean {
+    return this.gridVisible;
+  }
+
+  public getGridCellSize(): number {
+    return this.gridCellSize;
+  }
+
+  public getValueRange(): { min: number; max: number } {
+    return {
+      min: this.options.nodeMinValue ?? 0,
+      max: this.options.nodeMaxValue ?? 1,
+    };
+  }
+
+  public setValueRange(min: number, max: number): void {
+    this.options.nodeMinValue = min;
+    this.options.nodeMaxValue = max;
+    this.updateNodes();
+    this.render();
+  }
+
   public setEditorMode(enabled: boolean): void {
     this.editorModeEnabled = enabled;
     this.configureStageInteraction();
     this.configureNodeInteractions();
+  }
+
+  public setGridVisible(visible: boolean): void {
+    this.gridVisible = visible;
+    this.redrawGrid();
+    this.render();
+  }
+
+  public setGridSize(size: number): void {
+    this.gridCellSize = size;
+    this.redrawGrid();
+    this.render();
+  }
+
+  public setDarkMode(enabled: boolean): void {
+    this.isDarkMode = enabled;
+    this.app.renderer.background.color = this.scheme.background;
+    this.rebuildEdgeGraphics();
+    this.renderNodes();
+    this.updateNodes();
+    this.redrawGrid();
+    this.render();
+  }
+
+  public getWorldBounds(): { minX: number; maxX: number; minY: number; maxY: number } {
+    return {
+      minX: this.boundsX[0],
+      maxX: this.boundsX[1],
+      minY: this.boundsY[0],
+      maxY: this.boundsY[1],
+    };
   }
 
   public addVertex(vertex: Vertex): void {
@@ -303,19 +408,27 @@ export class GraphRenderer {
     this.boundsY = [minY, maxY + eps];
   }
 
-  public worldToScreen(x: number, y: number): [number, number] {
+  private worldToLocal(x: number, y: number): [number, number] {
     const padding = this.options.padding || 0;
     const w = this.options.width! - 2 * padding;
     const h = this.options.height! - 2 * padding;
 
-    const screenX =
-      padding +
-      ((x - this.boundsX[0]) / (this.boundsX[1] - this.boundsX[0])) * w;
-    const screenY =
-      padding +
-      ((y - this.boundsY[0]) / (this.boundsY[1] - this.boundsY[0])) * h;
+    const worldXRange = this.boundsX[1] - this.boundsX[0];
+    const worldYRange = this.boundsY[1] - this.boundsY[0];
+    const scale = Math.min(w / worldXRange, h / worldYRange);
 
-    return [screenX, screenY];
+    const worldCenterX = (this.boundsX[0] + this.boundsX[1]) / 2;
+    const worldCenterY = (this.boundsY[0] + this.boundsY[1]) / 2;
+
+    const localX = padding + w / 2 + (x - worldCenterX) * scale;
+    const localY = padding + h / 2 + (y - worldCenterY) * scale;
+
+    return [localX, localY];
+  }
+
+  public worldToScreen(x: number, y: number): [number, number] {
+    const [lx, ly] = this.worldToLocal(x, y);
+    return [lx * this.camera.zoom + this.camera.x, ly * this.camera.zoom + this.camera.y];
   }
 
   public screenToWorld(screenX: number, screenY: number): [number, number] {
@@ -323,8 +436,18 @@ export class GraphRenderer {
     const w = this.options.width! - 2 * padding;
     const h = this.options.height! - 2 * padding;
 
-    const x = (screenX - padding) / w  * (this.boundsX[1] - this.boundsX[0]) + this.boundsX[0];
-    const y = (screenY - padding) / h * (this.boundsY[1] - this.boundsY[0]) + this.boundsY[0];
+    const lx = (screenX - this.camera.x) / this.camera.zoom;
+    const ly = (screenY - this.camera.y) / this.camera.zoom;
+
+    const worldXRange = this.boundsX[1] - this.boundsX[0];
+    const worldYRange = this.boundsY[1] - this.boundsY[0];
+    const scale = Math.min(w / worldXRange, h / worldYRange);
+
+    const worldCenterX = (this.boundsX[0] + this.boundsX[1]) / 2;
+    const worldCenterY = (this.boundsY[0] + this.boundsY[1]) / 2;
+
+    const x = worldCenterX + (lx - (padding + w / 2)) / scale;
+    const y = worldCenterY + (ly - (padding + h / 2)) / scale;
 
     return [x, y];
   }
@@ -344,7 +467,7 @@ export class GraphRenderer {
     }
 
     this.app.stage.on("pointerdown", (event: PIXI.FederatedPointerEvent) => {
-      if (!this.onCanvasPointerDown) {
+      if (!this.onCanvasPointerDown || event.button !== 0) {
         return;
       }
       const [worldX, worldY] = this.screenToWorld(event.global.x, event.global.y);
@@ -364,7 +487,7 @@ export class GraphRenderer {
 
       nodeGfx.on("pointerdown", (event: PIXI.FederatedPointerEvent) => {
         event.stopPropagation();
-        if (!this.onNodePointerDown) {
+        if (!this.onNodePointerDown || event.button !== 0) {
           return;
         }
         this.onNodePointerDown(vertexIndex, event.global.x, event.global.y);
@@ -393,9 +516,9 @@ export class GraphRenderer {
         style: {
           fontFamily: "Courier New",
           fontSize: 11,
-          fill: 0x1f2937,
+          fill: this.scheme.labelFill,
           stroke: {
-            color: 0xffffff,
+            color: this.scheme.labelStroke,
             width: 3,
           },
         },
@@ -419,8 +542,8 @@ export class GraphRenderer {
     this.edgeLinesGraphics.clear();
     this.edgeLinesGraphics.setStrokeStyle({
       width: this.options.edgeWidth,
-      color: this.options.edgeColor,
-      alpha: this.options.edgeAlpha,
+      color: this.scheme.edgeColor,
+      alpha: this.scheme.edgeAlpha,
     });
 
     for (const edge of this.graph.edges) {
@@ -430,8 +553,8 @@ export class GraphRenderer {
         continue;
       }
 
-      const [x1, y1] = this.worldToScreen(v1.x, v1.y);
-      const [x2, y2] = this.worldToScreen(v2.x, v2.y);
+      const [x1, y1] = this.worldToLocal(v1.x, v1.y);
+      const [x2, y2] = this.worldToLocal(v2.x, v2.y);
       this.edgeLinesGraphics.moveTo(x1, y1);
       this.edgeLinesGraphics.lineTo(x2, y2);
       this.edgeLinesGraphics.stroke();
@@ -450,7 +573,7 @@ export class GraphRenderer {
     this.nodesLayer.removeChildren();
 
     for (const vertex of this.graph.vertices) {
-      const [screenX, screenY] = this.worldToScreen(vertex.x, vertex.y);
+      const [screenX, screenY] = this.worldToLocal(vertex.x, vertex.y);
 
       const nodeGfx = new PIXI.Graphics();
       nodeGfx.position.set(screenX, screenY);
@@ -463,9 +586,9 @@ export class GraphRenderer {
         style: {
           fontFamily: "Courier New",
           fontSize: 11,
-          fill: 0x1f2937,
+          fill: this.scheme.labelFill,
           stroke: {
-            color: 0xffffff,
+            color: this.scheme.labelStroke,
             width: 3,
           },
         },
@@ -500,7 +623,7 @@ export class GraphRenderer {
       const nodeGfx = this.nodeGraphics.get(vertex.index);
       if (!nodeGfx) continue;
 
-      const [screenX, screenY] = this.worldToScreen(vertex.x, vertex.y);
+      const [screenX, screenY] = this.worldToLocal(vertex.x, vertex.y);
       nodeGfx.position.set(screenX, screenY);
 
       // Get function value (default to 0.5 if not set)
@@ -526,8 +649,8 @@ export class GraphRenderer {
       nodeGfx.fill(color);
       nodeGfx.setStrokeStyle({
         width: 1.5,
-        color: 0x333333,
-        alpha: 0.8,
+        color: this.scheme.nodeStrokeColor,
+        alpha: this.scheme.nodeStrokeAlpha,
       });
       nodeGfx.stroke();
 
@@ -537,9 +660,9 @@ export class GraphRenderer {
       label.text = `${vertex.index}: ${value.toFixed(3)}\nin: ${flow.in.toFixed(3)}\nout: ${flow.out.toFixed(3)}\nnet: ${flow.net.toFixed(3)}`;
       const netFlow = flow.net;
       if (Math.abs(netFlow) < 1e-9) {
-        label.style.fill = 0x1f2937;
+        label.style.fill = this.scheme.labelFill;
       } else {
-        label.style.fill = netFlow > 0 ? 0x166534 : 0xb91c1c;
+        label.style.fill = netFlow > 0 ? this.scheme.flowPositiveFill : this.scheme.flowNegativeFill;
       }
       label.position.set(nodeGfx.position.x, nodeGfx.position.y - (size + 34));
     }
@@ -584,8 +707,8 @@ export class GraphRenderer {
       const v2 = this.vertexByIndex.get(edge.v2);
       if (!v1 || !v2) continue;
 
-      const [x1, y1] = this.worldToScreen(v1.x, v1.y);
-      const [x2, y2] = this.worldToScreen(v2.x, v2.y);
+      const [x1, y1] = this.worldToLocal(v1.x, v1.y);
+      const [x2, y2] = this.worldToLocal(v2.x, v2.y);
 
       const midX = 0.5 * (x1 + x2);
       const midY = 0.5 * (y1 + y2);
@@ -600,7 +723,7 @@ export class GraphRenderer {
 
       const flux = this.edgeFluxValues.get(edge.index) ?? 0;
       label.text = Math.abs(flux).toFixed(3);
-      label.style.fill = 0x1f2937;
+      label.style.fill = this.scheme.labelFill;
     }
   }
 
@@ -619,8 +742,8 @@ export class GraphRenderer {
       const v2 = this.vertexByIndex.get(edge.v2);
       if (!v1 || !v2) continue;
 
-      const [x1, y1] = this.worldToScreen(v1.x, v1.y);
-      const [x2, y2] = this.worldToScreen(v2.x, v2.y);
+      const [x1, y1] = this.worldToLocal(v1.x, v1.y);
+      const [x2, y2] = this.worldToLocal(v2.x, v2.y);
 
       const flux = this.edgeFluxValues.get(edge.index) ?? 0;
       const absFlux = Math.abs(flux);
@@ -647,7 +770,7 @@ export class GraphRenderer {
       const endX = midX + dirX * halfArrow;
       const endY = midY + dirY * halfArrow;
 
-      const color = 0x374151;
+      const color = this.scheme.arrowColor;
       const alpha = 0.35 + 0.65 * normalized;
       const lineWidth = 1 + 2 * normalized;
       const headSize = 4 + 6 * normalized;
@@ -672,6 +795,106 @@ export class GraphRenderer {
       arrow.lineTo(rightX, rightY);
       arrow.closePath();
       arrow.fill({ color, alpha });
+    }
+  }
+
+  private setupCameraEvents(): void {
+    const canvas = this.app.canvas;
+
+    canvas.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const cursorX = e.clientX - rect.left;
+      const cursorY = e.clientY - rect.top;
+      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+      const newZoom = Math.max(0.05, Math.min(20, this.camera.zoom * factor));
+      this.camera.x = cursorX - (cursorX - this.camera.x) * (newZoom / this.camera.zoom);
+      this.camera.y = cursorY - (cursorY - this.camera.y) * (newZoom / this.camera.zoom);
+      this.camera.zoom = newZoom;
+      this.applyCamera();
+    }, { passive: false });
+
+    canvas.addEventListener("pointerdown", (e) => {
+      const shouldPan =
+        e.button === 1 || e.button === 2 || (e.button === 0 && !this.editorModeEnabled);
+      if (!shouldPan) return;
+      this.panState = { active: true, lastX: e.clientX, lastY: e.clientY };
+      canvas.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+
+    canvas.addEventListener("pointermove", (e) => {
+      if (!this.panState.active) return;
+      this.camera.x += e.clientX - this.panState.lastX;
+      this.camera.y += e.clientY - this.panState.lastY;
+      this.panState.lastX = e.clientX;
+      this.panState.lastY = e.clientY;
+      this.applyCamera();
+    });
+
+    canvas.addEventListener("pointerup", () => {
+      this.panState.active = false;
+    });
+
+    canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+  }
+
+  private applyCamera(): void {
+    this.graphContainer.scale.set(this.camera.zoom);
+    this.graphContainer.position.set(this.camera.x, this.camera.y);
+    this.onCameraChange?.();
+    this.redrawGrid();
+    this.render();
+  }
+
+  private redrawGrid(): void {
+    this.gridLayer.clear();
+    if (!this.gridVisible || this.gridCellSize <= 0) return;
+
+    const width = this.options.width!;
+    const height = this.options.height!;
+    const padding = this.options.padding || 0;
+    const w = width - 2 * padding;
+    const h = height - 2 * padding;
+
+    // Visible area in graphContainer-local space
+    const localX0 = -this.camera.x / this.camera.zoom;
+    const localX1 = (width - this.camera.x) / this.camera.zoom;
+    const localY0 = -this.camera.y / this.camera.zoom;
+    const localY1 = (height - this.camera.y) / this.camera.zoom;
+
+    // Convert visible local bounds to world coordinates
+    const worldXRange = this.boundsX[1] - this.boundsX[0];
+    const worldYRange = this.boundsY[1] - this.boundsY[0];
+    const scale = Math.min(w / worldXRange, h / worldYRange);
+    const worldCenterX = (this.boundsX[0] + this.boundsX[1]) / 2;
+    const worldCenterY = (this.boundsY[0] + this.boundsY[1]) / 2;
+
+    const worldX0 = worldCenterX + (localX0 - (padding + w / 2)) / scale;
+    const worldX1 = worldCenterX + (localX1 - (padding + w / 2)) / scale;
+    const worldY0 = worldCenterY + (localY0 - (padding + h / 2)) / scale;
+    const worldY1 = worldCenterY + (localY1 - (padding + h / 2)) / scale;
+
+    const cellSize = this.gridCellSize; // in world units
+    const startWorldX = Math.floor(worldX0 / cellSize) * cellSize;
+    const startWorldY = Math.floor(worldY0 / cellSize) * cellSize;
+
+    // Keep lines visually ~1px wide regardless of zoom level
+    const strokeWidth = Math.max(0.5, 1 / this.camera.zoom);
+    this.gridLayer.setStrokeStyle({ width: strokeWidth, color: this.scheme.gridColor, alpha: 0.8 });
+
+    for (let wx = startWorldX; wx <= worldX1 + cellSize; wx += cellSize) {
+      const lx = padding + w / 2 + (wx - worldCenterX) * scale;
+      this.gridLayer.moveTo(lx, localY0);
+      this.gridLayer.lineTo(lx, localY1);
+      this.gridLayer.stroke();
+    }
+
+    for (let wy = startWorldY; wy <= worldY1 + cellSize; wy += cellSize) {
+      const ly = padding + h / 2 + (wy - worldCenterY) * scale;
+      this.gridLayer.moveTo(localX0, ly);
+      this.gridLayer.lineTo(localX1, ly);
+      this.gridLayer.stroke();
     }
   }
 }

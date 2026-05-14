@@ -1,7 +1,7 @@
 
 # Graph Diffusion
 
-Visualization and simulation framework for studying diffusion dynamics on graph-structured domains. Includes a GPU-accelerated rendering library and a second-order implicit diffusion solver, wired together in an interactive application with play/pause/reset controls and real-time edge flux visualization.
+Visualization and simulation framework for studying diffusion dynamics on graph-structured domains. Includes a GPU-accelerated rendering library and a second-order implicit diffusion solver, wired together in an interactive application with a graph editor, play/pause/reset controls, real-time edge flux visualization, and a full camera system with zoom and pan.
 
 ## Quick Start
 
@@ -23,13 +23,20 @@ graph-diffusion/
 │   ├── style.css                        # Application styles
 │   ├── render/
 │   │   └── renderer.ts                  # GraphRenderer implementation
-│   └── simulation/
-│       └── diffusionSolver.ts           # DiffusionSolver implementation
+│   ├── simulation/
+│   │   └── diffusionSolver.ts           # DiffusionSolver implementation
+│   └── ui/
+│       ├── graphEditor.ts               # Editor mode: add/move/delete nodes and edges
+│       ├── graphLoader.ts               # JSON graph loading and edge construction
+│       ├── modeToggle.ts                # Editor ↔ Simulation mode toggle button
+│       ├── simControls.ts               # Simulation mode: play/pause/reset controls
+│       └── viewControls.ts              # Shared view settings panel (labels, grid, dark mode)
 ├── public/
 │   └── graph.json                       # Example graph with initial conditions
 ├── docs/
 │   ├── RENDERING_LIBRARY.md             # Renderer API reference
 │   ├── SOLVER.md                        # Solver API reference
+│   ├── UI.md                            # Interactive application UI reference
 │   └── COMMIT_MSG_TEMPLATES.md          # Commit message conventions
 ├── package.json
 └── tsconfig.json
@@ -39,16 +46,22 @@ graph-diffusion/
 
 ### ✓ Complete: Rendering Library
 
-A composable graph visualization API built on Pixi.js v8. Renders vertices and edges with function values encoded as node color and size, and overlays directed flux arrows and per-vertex flow summaries.
+A composable graph visualization API built on Pixi.js v8. Renders vertices and edges with function values encoded as node color and size, overlays directed flux arrows and per-vertex flow summaries, and supports a full camera with zoom and pan.
 
 **Key features:**
 - Async factory initialization with Pixi.js v8
-- Automatic coordinate scaling and centering
+- Full-window canvas filling the browser viewport
+- Automatic coordinate scaling and centering with equal-aspect-ratio letterboxing
+- Camera system: mouse-wheel zoom toward cursor, middle/right-click pan, left-drag pan in simulation mode
+- Dynamic graph editing: add/remove vertices and edges at runtime
 - Customizable color scales, node sizes, and edge styling
+- Value range adjustable at runtime (`setValueRange`)
 - Edge flux arrows scaled and oriented by signed flux magnitude
 - Per-vertex text labels: current value, inflow, outflow, net flow
 - Per-edge text labels: flux magnitude
 - Toggleable text label overlay (`setTextLabelsVisible`)
+- Spatial grid overlay with world-coordinate cell sizing (`setGridVisible`, `setGridSize`)
+- Dark mode (`setDarkMode`)
 - Frame-synced animation via Pixi.js ticker
 
 See [docs/RENDERING_LIBRARY.md](docs/RENDERING_LIBRARY.md) for the full API reference.
@@ -69,12 +82,30 @@ See [docs/SOLVER.md](docs/SOLVER.md) for the full API reference.
 
 ### ✓ Complete: Interactive Application
 
-`main.ts` wires the renderer and solver into a runnable application:
+The application mounts in two switchable modes:
 
-- Loads a graph from `public/graph.json` (vertex adjacency list format; edges and lengths are computed automatically)
-- Parses initial conditions from the JSON (per-vertex `initialValue`, top-level `initialValues` object/array, or random fallback)
-- Play/Pause/Reset controls with live time and step-count display
-- Toggleable text label overlay
+**Editor mode** — build and modify the graph before simulating:
+- Move, add, and delete nodes
+- Add and delete edges
+- Set initial values per node via click-to-open tooltip
+- Right-click to cancel edge placement
+
+**Simulation mode** — run and observe the diffusion:
+- Play / Pause / Reset controls with live time and step-count display
+- Real-time flux arrows and flow label overlay
+
+**View controls** (available in both modes, lower-left panel):
+- Toggle text label overlay
+- Toggle dark mode
+- Toggle spatial grid with adjustable world-unit cell size
+- Adjust value range (min / max) for the color and size mapping
+
+**Camera** (available in both modes):
+- Mouse-wheel zoom toward cursor
+- Middle-click or right-click drag to pan
+- Left-click drag to pan in simulation mode
+
+See [docs/UI.md](docs/UI.md) for the full UI reference.
 
 ## Graph JSON Format
 
@@ -165,18 +196,24 @@ graph.json ──► loadGraph() ──► Graph (vertices + edges)
                           └── solutionState ──┘
                               (currentValues,
                                edgeFluxValues)
+
+UI Layer
+────────────────────────────────────────────────────
+  modeToggle ──► graphEditor  ──► renderer (editor mode)
+             └─► simControls  ──► solver + renderer (sim mode)
+  viewControls ──► renderer (both modes)
 ```
 
-The solver and renderer are independent components connected only through `FunctionValues` and `Map<number, number>` (edge fluxes). Either component can be used standalone or replaced.
+The solver and renderer are independent components connected only through `FunctionValues` and `Map<number, number>` (edge fluxes). The UI layer is split into mode-specific controllers that mount and unmount independently, with a shared view controls panel that persists across mode switches.
 
 ## Documentation
 
 - [docs/RENDERING_LIBRARY.md](docs/RENDERING_LIBRARY.md): Full renderer API reference, examples, troubleshooting
 - [docs/SOLVER.md](docs/SOLVER.md): Full solver API reference, numerical method, examples
+- [docs/UI.md](docs/UI.md): Interactive application UI reference
 - `src/types.ts`: Shared type definitions with JSDoc comments
 
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
-
 

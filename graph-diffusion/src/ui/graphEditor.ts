@@ -1,5 +1,6 @@
 import type { GraphState } from "../types";
 import type { GraphRenderer } from "../render/renderer";
+import { createViewControlsPanel } from "./viewControls";
 
 type EditorTool = "move" | "addNode" | "addEdge" | "delete";
 
@@ -13,8 +14,6 @@ function getCanvasShell(container: HTMLElement, renderer: GraphRenderer): HTMLEl
 
   const canvasShell = document.createElement("div");
   canvasShell.className = "canvas-shell";
-  canvasShell.style.width = `${canvas.clientWidth || canvas.width}px`;
-  canvasShell.style.height = `${canvas.clientHeight || canvas.height}px`;
   container.insertBefore(canvasShell, canvas);
   canvasShell.appendChild(canvas);
   return canvasShell;
@@ -79,11 +78,14 @@ export function setupGraphEditor(
 ): { teardown(): void } {
   renderer.setEditorMode(true);
   const canvasShell = getCanvasShell(container, renderer);
+  const viewControls = createViewControlsPanel(canvasShell, renderer);
 
   let currentTool: EditorTool = "move";
   let selectedVertexIndex: number | null = null;
   let addEdgeSource: number | null = null;
   let draggingVertexIndex: number | null = null;
+  let hasDragged = false;
+  let tooltipWasOpenFor: number | null = null;
 
   const toolbar = document.createElement("div");
   toolbar.className = "editor-toolbar";
@@ -167,8 +169,17 @@ export function setupGraphEditor(
       return;
     }
     const [x, y] = renderer.worldToScreen(vertex.x, vertex.y);
+    // Position to the lower-right of the node, then clamp so it stays inside the shell
     tooltip.style.left = `${x + 12}px`;
     tooltip.style.top = `${y + 12}px`;
+    const shellW = canvasShell.offsetWidth;
+    const shellH = canvasShell.offsetHeight;
+    const tw = tooltip.offsetWidth;
+    const th = tooltip.offsetHeight;
+    const clampedLeft = Math.min(Math.max(8, x + 12), shellW - tw - 8);
+    const clampedTop = Math.min(Math.max(8, y + 12), shellH - th - 8);
+    tooltip.style.left = `${clampedLeft}px`;
+    tooltip.style.top = `${clampedTop}px`;
   }
 
   function showTooltip(vertexIndex: number): void {
@@ -237,20 +248,22 @@ export function setupGraphEditor(
       return;
     }
 
+    hasDragged = true;
     const rect = renderer.getCanvas().getBoundingClientRect();
     const canvasX = event.clientX - rect.left;
     const canvasY = event.clientY - rect.top;
     const [worldX, worldY] = renderer.screenToWorld(canvasX, canvasY);
     renderer.setVertexPosition(draggingVertexIndex, worldX, worldY);
     refreshIncidentEdgeLengths(draggingVertexIndex);
-
-    if (selectedVertexIndex === draggingVertexIndex && !tooltip.hidden) {
-      positionTooltip(draggingVertexIndex);
-    }
   }
 
   function stopDragging(): void {
+    if (draggingVertexIndex !== null && !hasDragged && tooltipWasOpenFor !== draggingVertexIndex) {
+      showTooltip(draggingVertexIndex);
+    }
     draggingVertexIndex = null;
+    hasDragged = false;
+    tooltipWasOpenFor = null;
   }
 
   function addEdgeBetween(v1Index: number, v2Index: number): void {
@@ -304,6 +317,10 @@ export function setupGraphEditor(
 
     if (currentTool === "move") {
       draggingVertexIndex = vertexIndex;
+      hasDragged = false;
+      tooltipWasOpenFor = selectedVertexIndex === vertexIndex ? vertexIndex : null;
+      hideTooltip();
+      return;
     }
 
     showTooltip(vertexIndex);
@@ -418,6 +435,7 @@ export function setupGraphEditor(
   renderer.onCanvasPointerDown = (worldX, worldY) => {
     handleCanvasPointerDown(worldX, worldY);
   };
+  renderer.onCameraChange = hideTooltip;
 
   refreshToolUI();
   refreshEdgePlacementStatus();
@@ -442,9 +460,11 @@ export function setupGraphEditor(
       renderer.setEditorMode(false);
       renderer.onNodePointerDown = null;
       renderer.onCanvasPointerDown = null;
+      renderer.onCameraChange = null;
 
       stopDragging();
       hideTooltip();
+      viewControls.teardown();
       toolbar.remove();
       edgePlacementStatus.remove();
       tooltip.remove();

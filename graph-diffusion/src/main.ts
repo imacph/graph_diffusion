@@ -14,8 +14,8 @@ async function main() {
   const container = document.getElementById("app")!;
 
   const renderer = await GraphRenderer.create(container, graphState.graph, {
-    width: 1200,
-    height: 800,
+    width: window.innerWidth,
+    height: window.innerHeight,
     nodeMinSize: 5,
     nodeMaxSize: 25,
     nodeMinValue: 0,
