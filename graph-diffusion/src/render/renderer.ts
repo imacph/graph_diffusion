@@ -16,9 +16,11 @@
 
 import * as PIXI from "pixi.js";
 import type {
+  Edge,
   Graph,
   FunctionValues,
   RenderOptions,
+  Vertex,
 } from "../types";
 import { DEFAULT_RENDER_OPTIONS } from "../types";
 
@@ -36,12 +38,17 @@ export class GraphRenderer {
   private vertexTextGraphics: Map<number, PIXI.Text>;
   private edgeTextGraphics: Map<number, PIXI.Text>;
   private edgeArrowGraphics: Map<number, PIXI.Graphics>;
+  private edgeLinesGraphics: PIXI.Graphics;
 
   // Current function values
   private functionValues: FunctionValues;
   private edgeFluxValues: Map<number, number>;
   private vertexByIndex: Map<number, Graph["vertices"][number]>;
   private textLabelsVisible: boolean;
+  private editorModeEnabled: boolean;
+
+  public onNodePointerDown: ((vertexIndex: number, screenX: number, screenY: number) => void) | null;
+  public onCanvasPointerDown: ((worldX: number, worldY: number) => void) | null;
 
   // Coordinate bounds for scaling
   private boundsX: [number, number] = [0, 1];
@@ -67,10 +74,14 @@ export class GraphRenderer {
     this.vertexTextGraphics = new Map();
     this.edgeTextGraphics = new Map();
     this.edgeArrowGraphics = new Map();
+    this.edgeLinesGraphics = new PIXI.Graphics();
     this.functionValues = new Map();
     this.edgeFluxValues = new Map();
     this.vertexByIndex = new Map(graph.vertices.map((vertex) => [vertex.index, vertex]));
     this.textLabelsVisible = true;
+    this.editorModeEnabled = false;
+    this.onNodePointerDown = null;
+    this.onCanvasPointerDown = null;
 
     // Compute bounds from graph vertices
     this.computeBounds();
@@ -163,6 +174,112 @@ export class GraphRenderer {
     }
   }
 
+  public setEditorMode(enabled: boolean): void {
+    this.editorModeEnabled = enabled;
+    this.configureStageInteraction();
+    this.configureNodeInteractions();
+  }
+
+  public addVertex(vertex: Vertex): void {
+    this.graph.vertices.push(vertex);
+    this.vertexByIndex.set(vertex.index, vertex);
+    this.renderNodes();
+    this.rebuildEdgeGraphics();
+    this.updateNodes();
+    this.render();
+  }
+
+  public removeVertex(index: number): void {
+    if (!this.vertexByIndex.has(index)) {
+      return;
+    }
+
+    this.graph.vertices = this.graph.vertices.filter((vertex) => vertex.index !== index);
+    for (const vertex of this.graph.vertices) {
+      vertex.edges = vertex.edges.filter((neighbor) => neighbor !== index);
+    }
+
+    const removedEdgeIndexes = new Set<number>();
+    this.graph.edges = this.graph.edges.filter((edge) => {
+      const keep = edge.v1 !== index && edge.v2 !== index;
+      if (!keep) {
+        removedEdgeIndexes.add(edge.index);
+      }
+      return keep;
+    });
+
+    this.functionValues.delete(index);
+    for (const edgeIndex of removedEdgeIndexes) {
+      this.edgeFluxValues.delete(edgeIndex);
+    }
+
+    this.rebuildVertexLookup();
+    this.renderNodes();
+    this.rebuildEdgeGraphics();
+    this.updateNodes();
+    this.render();
+  }
+
+  public addEdge(edge: Edge): void {
+    if (!this.vertexByIndex.has(edge.v1) || !this.vertexByIndex.has(edge.v2)) {
+      return;
+    }
+
+    this.graph.edges.push(edge);
+
+    const v1 = this.vertexByIndex.get(edge.v1);
+    const v2 = this.vertexByIndex.get(edge.v2);
+    if (v1 && !v1.edges.includes(edge.v2)) {
+      v1.edges.push(edge.v2);
+    }
+    if (v2 && !v2.edges.includes(edge.v1)) {
+      v2.edges.push(edge.v1);
+    }
+
+    this.rebuildEdgeGraphics();
+    this.updateNodes();
+    this.render();
+  }
+
+  public removeEdge(index: number): void {
+    const edge = this.graph.edges.find((entry) => entry.index === index);
+    if (!edge) {
+      return;
+    }
+
+    this.graph.edges = this.graph.edges.filter((entry) => entry.index !== index);
+    this.edgeFluxValues.delete(index);
+
+    const v1 = this.vertexByIndex.get(edge.v1);
+    const v2 = this.vertexByIndex.get(edge.v2);
+    if (v1) {
+      v1.edges = v1.edges.filter((neighbor) => neighbor !== edge.v2);
+    }
+    if (v2) {
+      v2.edges = v2.edges.filter((neighbor) => neighbor !== edge.v1);
+    }
+
+    this.rebuildEdgeGraphics();
+    this.updateNodes();
+    this.render();
+  }
+
+  public setVertexPosition(index: number, worldX: number, worldY: number): void {
+    const vertex = this.vertexByIndex.get(index);
+    if (!vertex) {
+      return;
+    }
+
+    vertex.x = worldX;
+    vertex.y = worldY;
+
+    this.redrawEdgeLines();
+    this.updateEdgeFluxLabels();
+    this.updateEdgeFluxArrows();
+    this.updateNodes();
+    this.render();
+  }
+
   // ========== Private Methods ==========
 
   private computeBounds(): void {
@@ -186,7 +303,7 @@ export class GraphRenderer {
     this.boundsY = [minY, maxY + eps];
   }
 
-  private worldToScreen(x: number, y: number): [number, number] {
+  public worldToScreen(x: number, y: number): [number, number] {
     const padding = this.options.padding || 0;
     const w = this.options.width! - 2 * padding;
     const h = this.options.height! - 2 * padding;
@@ -201,36 +318,76 @@ export class GraphRenderer {
     return [screenX, screenY];
   }
 
-  private toFiniteNumber(value: unknown, fallback = 0): number {
-    if (typeof value === "number" && Number.isFinite(value)) {
-      return value;
-    }
-    if (Array.isArray(value) && value.length > 0) {
-      return this.toFiniteNumber(value[0], fallback);
-    }
-    return fallback;
+  public screenToWorld(screenX: number, screenY: number): [number, number] {
+    const padding = this.options.padding || 0;
+    const w = this.options.width! - 2 * padding;
+    const h = this.options.height! - 2 * padding;
+
+    const x = (screenX - padding) / w  * (this.boundsX[1] - this.boundsX[0]) + this.boundsX[0];
+    const y = (screenY - padding) / h * (this.boundsY[1] - this.boundsY[0]) + this.boundsY[0];
+
+    return [x, y];
   }
 
-  private renderEdges(): void {
-    const edges = new PIXI.Graphics();
-    edges.setStrokeStyle({
-      width: this.options.edgeWidth,
-      color: this.options.edgeColor,
-      alpha: this.options.edgeAlpha,
+  private rebuildVertexLookup(): void {
+    this.vertexByIndex = new Map(this.graph.vertices.map((vertex) => [vertex.index, vertex]));
+  }
+
+  private configureStageInteraction(): void {
+    this.app.stage.eventMode = this.editorModeEnabled ? "static" : "none";
+    this.app.stage.cursor = this.editorModeEnabled ? "crosshair" : "default";
+    this.app.stage.hitArea = this.app.screen;
+
+    this.app.stage.removeAllListeners("pointerdown");
+    if (!this.editorModeEnabled) {
+      return;
+    }
+
+    this.app.stage.on("pointerdown", (event: PIXI.FederatedPointerEvent) => {
+      if (!this.onCanvasPointerDown) {
+        return;
+      }
+      const [worldX, worldY] = this.screenToWorld(event.global.x, event.global.y);
+      this.onCanvasPointerDown(worldX, worldY);
     });
+  }
+
+  private configureNodeInteractions(): void {
+    for (const [vertexIndex, nodeGfx] of this.nodeGraphics.entries()) {
+      nodeGfx.removeAllListeners("pointerdown");
+      nodeGfx.eventMode = this.editorModeEnabled ? "static" : "none";
+      nodeGfx.cursor = this.editorModeEnabled ? "pointer" : "default";
+
+      if (!this.editorModeEnabled) {
+        continue;
+      }
+
+      nodeGfx.on("pointerdown", (event: PIXI.FederatedPointerEvent) => {
+        event.stopPropagation();
+        if (!this.onNodePointerDown) {
+          return;
+        }
+        this.onNodePointerDown(vertexIndex, event.global.x, event.global.y);
+      });
+    }
+  }
+
+  private rebuildEdgeGraphics(): void {
+    for (const text of this.edgeTextGraphics.values()) {
+      text.destroy();
+    }
+    for (const arrow of this.edgeArrowGraphics.values()) {
+      arrow.destroy();
+    }
+
+    this.edgeTextGraphics.clear();
+    this.edgeArrowGraphics.clear();
+    this.edgesLayer.removeChildren();
+
+    this.edgeLinesGraphics = new PIXI.Graphics();
+    this.edgesLayer.addChild(this.edgeLinesGraphics);
 
     for (const edge of this.graph.edges) {
-      const v1 = this.vertexByIndex.get(edge.v1);
-      const v2 = this.vertexByIndex.get(edge.v2);
-      if (!v1 || !v2) continue;
-
-      const [x1, y1] = this.worldToScreen(v1.x, v1.y);
-      const [x2, y2] = this.worldToScreen(v2.x, v2.y);
-
-      edges.moveTo(x1, y1);
-      edges.lineTo(x2, y2);
-      edges.stroke();
-
       const edgeLabel = new PIXI.Text({
         text: "0.000",
         style: {
@@ -253,12 +410,45 @@ export class GraphRenderer {
       this.edgesLayer.addChild(edgeArrow);
     }
 
-    this.edgesLayer.addChild(edges);
+    this.redrawEdgeLines();
     this.updateEdgeFluxLabels();
     this.updateEdgeFluxArrows();
   }
 
+  private redrawEdgeLines(): void {
+    this.edgeLinesGraphics.clear();
+    this.edgeLinesGraphics.setStrokeStyle({
+      width: this.options.edgeWidth,
+      color: this.options.edgeColor,
+      alpha: this.options.edgeAlpha,
+    });
+
+    for (const edge of this.graph.edges) {
+      const v1 = this.vertexByIndex.get(edge.v1);
+      const v2 = this.vertexByIndex.get(edge.v2);
+      if (!v1 || !v2) {
+        continue;
+      }
+
+      const [x1, y1] = this.worldToScreen(v1.x, v1.y);
+      const [x2, y2] = this.worldToScreen(v2.x, v2.y);
+      this.edgeLinesGraphics.moveTo(x1, y1);
+      this.edgeLinesGraphics.lineTo(x2, y2);
+      this.edgeLinesGraphics.stroke();
+    }
+  }
+
   private renderNodes(): void {
+    for (const text of this.vertexTextGraphics.values()) {
+      text.destroy();
+    }
+    for (const node of this.nodeGraphics.values()) {
+      node.destroy();
+    }
+    this.vertexTextGraphics.clear();
+    this.nodeGraphics.clear();
+    this.nodesLayer.removeChildren();
+
     for (const vertex of this.graph.vertices) {
       const [screenX, screenY] = this.worldToScreen(vertex.x, vertex.y);
 
@@ -285,6 +475,22 @@ export class GraphRenderer {
       this.vertexTextGraphics.set(vertex.index, vertexLabel);
       this.nodesLayer.addChild(vertexLabel);
     }
+
+    this.configureNodeInteractions();
+  }
+
+  private toFiniteNumber(value: unknown, fallback = 0): number {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+    if (Array.isArray(value) && value.length > 0) {
+      return this.toFiniteNumber(value[0], fallback);
+    }
+    return fallback;
+  }
+
+  private renderEdges(): void {
+    this.rebuildEdgeGraphics();
   }
 
   private updateNodes(): void {
@@ -293,6 +499,9 @@ export class GraphRenderer {
     for (const vertex of this.graph.vertices) {
       const nodeGfx = this.nodeGraphics.get(vertex.index);
       if (!nodeGfx) continue;
+
+      const [screenX, screenY] = this.worldToScreen(vertex.x, vertex.y);
+      nodeGfx.position.set(screenX, screenY);
 
       // Get function value (default to 0.5 if not set)
       const value = this.toFiniteNumber(this.functionValues.get(vertex.index), 0.5);

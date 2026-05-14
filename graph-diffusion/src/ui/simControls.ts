@@ -5,14 +5,24 @@ export function setupUI(
   container: HTMLElement,
   solver: DiffusionSolver,
   renderer: GraphRenderer
-): void {
+): { teardown(): void } {
+  renderer.setEditorMode(false);
+  renderer.onNodePointerDown = null;
+  renderer.onCanvasPointerDown = null;
+
   const canvas = renderer.getCanvas();
-  const canvasShell = document.createElement("div");
-  canvasShell.className = "canvas-shell";
-  canvasShell.style.width = `${canvas.clientWidth || canvas.width}px`;
-  canvasShell.style.height = `${canvas.clientHeight || canvas.height}px`;
-  container.insertBefore(canvasShell, canvas);
-  canvasShell.appendChild(canvas);
+  let canvasShell: HTMLElement;
+  const existingShell = canvas.parentElement;
+  if (existingShell && existingShell.classList.contains("canvas-shell")) {
+    canvasShell = existingShell;
+  } else {
+    canvasShell = document.createElement("div");
+    canvasShell.className = "canvas-shell";
+    canvasShell.style.width = `${canvas.clientWidth || canvas.width}px`;
+    canvasShell.style.height = `${canvas.clientHeight || canvas.height}px`;
+    container.insertBefore(canvasShell, canvas);
+    canvasShell.appendChild(canvas);
+  }
 
   const labelsToggleWrap = document.createElement("label");
   labelsToggleWrap.className = "labels-toggle";
@@ -25,12 +35,13 @@ export function setupUI(
   labelsToggleText.textContent = "Show text labels";
 
   labelsToggleWrap.append(labelsToggleInput, labelsToggleText);
-  container.appendChild(labelsToggleWrap);
+  canvasShell.appendChild(labelsToggleWrap);
 
   renderer.setTextLabelsVisible(labelsToggleInput.checked);
-  labelsToggleInput.addEventListener("change", () => {
+  const handleLabelsToggleChange = () => {
     renderer.setTextLabelsVisible(labelsToggleInput.checked);
-  });
+  };
+  labelsToggleInput.addEventListener("change", handleLabelsToggleChange);
 
   const simControls = document.createElement("div");
   simControls.className = "sim-controls";
@@ -64,26 +75,28 @@ export function setupUI(
     stepText.textContent = `step=${state.timeStepCount}`;
   }
 
-  playPauseButton.addEventListener("click", () => {
+  const handlePlayPauseClick = () => {
     isRunning = !isRunning;
     renderStateUI();
-  });
+  };
+  playPauseButton.addEventListener("click", handlePlayPauseClick);
 
-  resetButton.addEventListener("click", () => {
+  const handleResetClick = () => {
     isRunning = false;
     solver.reset();
     const resetState = solver.getState();
     renderer.update(resetState.currentValues, resetState.edgeFluxValues);
     renderer.render();
     renderStateUI();
-  });
+  };
+  resetButton.addEventListener("click", handleResetClick);
 
   const initialState = solver.getState();
   renderer.update(initialState.currentValues, initialState.edgeFluxValues);
   renderer.render();
   renderStateUI();
 
-  renderer.ticker.add(() => {
+  const tick = () => {
     if (!isRunning) {
       return;
     }
@@ -93,5 +106,17 @@ export function setupUI(
     renderer.update(state.currentValues, state.edgeFluxValues);
     renderer.render();
     renderStateUI();
-  });
+  };
+  renderer.ticker.add(tick);
+
+  return {
+    teardown() {
+      renderer.ticker.remove(tick);
+      labelsToggleInput.removeEventListener("change", handleLabelsToggleChange);
+      playPauseButton.removeEventListener("click", handlePlayPauseClick);
+      resetButton.removeEventListener("click", handleResetClick);
+      simControls.remove();
+      labelsToggleWrap.remove();
+    },
+  };
 }

@@ -23,6 +23,23 @@ body {
   background: #f5f5f5;
 }
 
+.mode-toggle-bar {
+  position: absolute;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: inline-flex;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #d1d5db;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.mode-toggle-button {
+  min-width: 130px;
+}
+
 .canvas-shell {
   position: relative;
 }
@@ -94,6 +111,72 @@ body {
   font-family: "Courier New", monospace;
   font-variant-numeric: tabular-nums;
   color: #111827;
+}
+
+.editor-toolbar {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  display: inline-flex;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #d1d5db;
+  background: rgba(255, 255, 255, 0.9);
+  z-index: 10;
+}
+
+.tool-button {
+  min-width: 86px;
+}
+
+.tool-button.active {
+  background: #dbeafe;
+  border-color: #60a5fa;
+}
+
+.node-tooltip {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 180px;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid #d1d5db;
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+  z-index: 15;
+}
+
+.node-tooltip[hidden] {
+  display: none;
+}
+
+.node-tooltip-title {
+  color: #111827;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.node-tooltip-label {
+  color: #374151;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.node-tooltip-input {
+  width: 100%;
+  border: 1px solid #9ca3af;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 13px;
+  color: #111827;
+  background: #ffffff;
+}
+
+.node-tooltip-button {
+  width: 100%;
 }
 
 canvas {

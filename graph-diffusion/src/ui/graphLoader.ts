@@ -19,6 +19,36 @@ export type LoadedGraphData = {
   initialValues: FunctionValues;
 };
 
+function normalizeAdjacency(vertices: GraphJsonVertex[]): void {
+  const vertexByIndex = new Map(vertices.map((vertex) => [vertex.index, vertex]));
+
+  for (const vertex of vertices) {
+    const uniqueNeighbors = new Set<number>();
+    for (const neighbor of vertex.edges) {
+      if (neighbor === vertex.index) {
+        continue;
+      }
+      if (!vertexByIndex.has(neighbor)) {
+        continue;
+      }
+      uniqueNeighbors.add(neighbor);
+    }
+    vertex.edges = [...uniqueNeighbors];
+  }
+
+  for (const vertex of vertices) {
+    for (const neighborIndex of vertex.edges) {
+      const neighbor = vertexByIndex.get(neighborIndex);
+      if (!neighbor) {
+        continue;
+      }
+      if (!neighbor.edges.includes(vertex.index)) {
+        neighbor.edges.push(vertex.index);
+      }
+    }
+  }
+}
+
 function getInitialValuesFromJson(data: GraphJson): FunctionValues {
   const initialValues: FunctionValues = new Map();
 
@@ -69,14 +99,9 @@ export async function loadGraph(path: string): Promise<LoadedGraphData> {
   const response = await fetch(path);
   const data = (await response.json()) as GraphJson;
 
-  // Validate symmetric adjacency
-  for (const vertex of data.vertices) {
-    for (const neighbor of vertex.edges) {
-      if (!data.vertices[neighbor].edges.includes(vertex.index)) {
-        console.warn(`Asymmetric edge: ${vertex.index} → ${neighbor}`);
-      }
-    }
-  }
+  normalizeAdjacency(data.vertices);
+
+  const vertexByIndex = new Map(data.vertices.map((vertex) => [vertex.index, vertex]));
 
   // Build edges from vertex adjacency
   const edges: Edge[] = [];
@@ -87,9 +112,13 @@ export async function loadGraph(path: string): Promise<LoadedGraphData> {
     for (const neighborIndex of vertex.edges) {
       const edgeKey = [vertex.index, neighborIndex].sort().join("-");
       if (!seenEdges.has(edgeKey)) {
+        const neighbor = vertexByIndex.get(neighborIndex);
+        if (!neighbor) {
+          continue;
+        }
         const length = Math.sqrt(
-          Math.pow(data.vertices[vertex.index].x - data.vertices[neighborIndex].x, 2) +
-          Math.pow(data.vertices[vertex.index].y - data.vertices[neighborIndex].y, 2)
+          Math.pow(vertex.x - neighbor.x, 2) +
+          Math.pow(vertex.y - neighbor.y, 2)
         );
         edges.push({ index: edgeIndex++, v1: vertex.index, v2: neighborIndex, length: length });
         seenEdges.add(edgeKey);

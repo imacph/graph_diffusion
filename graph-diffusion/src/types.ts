@@ -98,3 +98,19 @@ export interface DiffusionParams {
   iterations: number; // Number of iterations to run
   initialValues: FunctionValues; // Initial condition at t=0
 }
+
+/**
+ * shared app-mode state to toggle editor and simulator modes
+ * 
+ */
+
+export type AppMode = "editor" | "simulation";
+
+/**
+ * State of the graph and function values, used for simulation, rendering and editing.
+ */
+export interface GraphState {
+  graph: Graph;
+  initialValues: FunctionValues;
+}
+

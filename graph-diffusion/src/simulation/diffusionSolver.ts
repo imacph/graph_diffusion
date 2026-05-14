@@ -45,6 +45,10 @@ export class DiffusionSolver {
         return raw.map((entry) => this.toFiniteNumber(entry, 0));
     }
 
+    private getVertexRowByIndex(): Map<number, number> {
+        return new Map(this.graph.vertices.map((vertex, rowIndex) => [vertex.index, rowIndex]));
+    }
+
     private computeEdgeFluxValues(vertexValues: FunctionValues): Map<number, number> {
         const D = this.params.diffusionRate;
         const edgeFluxValues = new Map<number, number>();
@@ -65,12 +69,19 @@ export class DiffusionSolver {
     private computeLHS(): Matrix {
         const numVertices = this.graph.vertices.length;
         const numEdges = this.graph.edges.length;
+        const vertexRowByIndex = this.getVertexRowByIndex();
 
         // incidence matrix B (numVertices x numEdges)
         const B = Array.from({ length: numVertices }, () => Array(numEdges).fill(0));
-        for (const edge of this.graph.edges) {
-            B[edge.v1][edge.index] = 1;
-            B[edge.v2][edge.index] = -1;
+        for (let edgeColumn = 0; edgeColumn < this.graph.edges.length; edgeColumn += 1) {
+            const edge = this.graph.edges[edgeColumn];
+            const v1Row = vertexRowByIndex.get(edge.v1);
+            const v2Row = vertexRowByIndex.get(edge.v2);
+            if (v1Row === undefined || v2Row === undefined) {
+                continue;
+            }
+            B[v1Row][edgeColumn] = 1;
+            B[v2Row][edgeColumn] = -1;
         }
 
         // weight matrix W (numEdges x numEdges)
@@ -140,10 +151,17 @@ export class DiffusionSolver {
     private computeLaplacian(): Matrix {
         const numVertices = this.graph.vertices.length;
         const numEdges = this.graph.edges.length;
+        const vertexRowByIndex = this.getVertexRowByIndex();
         const B = Array.from({ length: numVertices }, () => Array(numEdges).fill(0));
-        for (const edge of this.graph.edges) {
-            B[edge.v1][edge.index] = 1;
-            B[edge.v2][edge.index] = -1;
+        for (let edgeColumn = 0; edgeColumn < this.graph.edges.length; edgeColumn += 1) {
+            const edge = this.graph.edges[edgeColumn];
+            const v1Row = vertexRowByIndex.get(edge.v1);
+            const v2Row = vertexRowByIndex.get(edge.v2);
+            if (v1Row === undefined || v2Row === undefined) {
+                continue;
+            }
+            B[v1Row][edgeColumn] = 1;
+            B[v2Row][edgeColumn] = -1;
         }
         const weights = this.graph.edges.map(edge => 1 / (edge.length ?? 1));
         const W = math.diag(weights);
