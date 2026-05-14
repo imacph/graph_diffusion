@@ -135,6 +135,35 @@ body {
   border-color: #60a5fa;
 }
 
+.tool-button-danger {
+  background: #fef2f2;
+  border-color: #fca5a5;
+  color: #991b1b;
+}
+
+.tool-button-danger:hover {
+  background: #fee2e2;
+}
+
+.edge-placement-status {
+  position: absolute;
+  top: 72px;
+  left: 20px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #f59e0b;
+  background: rgba(255, 251, 235, 0.95);
+  color: #92400e;
+  font-size: 13px;
+  font-weight: 600;
+  z-index: 11;
+  user-select: none;
+}
+
+.edge-placement-status[hidden] {
+  display: none;
+}
+
 .node-tooltip {
   position: absolute;
   display: flex;

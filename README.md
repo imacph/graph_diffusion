@@ -177,4 +177,6 @@ The solver and renderer are independent components connected only through `Funct
 
 ## License
 
-TBD
+This project is licensed under the MIT License - see the [LICENSE.md](LICENSE) file for details.
+
+

@@ -108,8 +108,18 @@ export function setupGraphEditor(
   deleteButton.className = "sim-button tool-button";
   deleteButton.textContent = "Delete";
 
-  toolbar.append(moveButton, addNodeButton, addEdgeButton, deleteButton);
+  const clearGraphButton = document.createElement("button");
+  clearGraphButton.type = "button";
+  clearGraphButton.className = "sim-button tool-button tool-button-danger";
+  clearGraphButton.textContent = "Clear Graph";
+
+  toolbar.append(moveButton, addNodeButton, addEdgeButton, deleteButton, clearGraphButton);
   canvasShell.appendChild(toolbar);
+
+  const edgePlacementStatus = document.createElement("div");
+  edgePlacementStatus.className = "edge-placement-status";
+  edgePlacementStatus.hidden = true;
+  canvasShell.appendChild(edgePlacementStatus);
 
   const tooltip = document.createElement("div");
   tooltip.className = "node-tooltip";
@@ -181,6 +191,17 @@ export function setupGraphEditor(
     }
   }
 
+  function refreshEdgePlacementStatus(): void {
+    const active = currentTool === "addEdge" && addEdgeSource !== null;
+    edgePlacementStatus.hidden = !active;
+    if (!active) {
+      edgePlacementStatus.textContent = "";
+      return;
+    }
+    edgePlacementStatus.textContent =
+      `Connecting from Node #${addEdgeSource}. Click a target node, or right-click to cancel.`;
+  }
+
   function setTool(tool: EditorTool): void {
     currentTool = tool;
     stopDragging();
@@ -188,6 +209,7 @@ export function setupGraphEditor(
       addEdgeSource = null;
     }
     refreshToolUI();
+    refreshEdgePlacementStatus();
   }
 
   function refreshIncidentEdgeLengths(vertexIndex: number): void {
@@ -263,17 +285,20 @@ export function setupGraphEditor(
       if (addEdgeSource === vertexIndex) {
         addEdgeSource = null;
       }
+      refreshEdgePlacementStatus();
       return;
     }
 
     if (currentTool === "addEdge") {
       if (addEdgeSource === null) {
         addEdgeSource = vertexIndex;
+        hideTooltip();
       } else {
         addEdgeBetween(addEdgeSource, vertexIndex);
         addEdgeSource = null;
+        showTooltip(vertexIndex);
       }
-      showTooltip(vertexIndex);
+      refreshEdgePlacementStatus();
       return;
     }
 
@@ -306,6 +331,7 @@ export function setupGraphEditor(
     if (currentTool !== "addEdge") {
       addEdgeSource = null;
     }
+    refreshEdgePlacementStatus();
   }
 
   function handleEscape(event: KeyboardEvent): void {
@@ -315,12 +341,39 @@ export function setupGraphEditor(
     stopDragging();
     addEdgeSource = null;
     hideTooltip();
+    refreshEdgePlacementStatus();
   }
 
   const handleMoveToolClick = () => setTool("move");
   const handleAddNodeToolClick = () => setTool("addNode");
   const handleAddEdgeToolClick = () => setTool("addEdge");
   const handleDeleteToolClick = () => setTool("delete");
+
+  const handleClearGraphClick = () => {
+    stopDragging();
+    hideTooltip();
+    addEdgeSource = null;
+
+    const vertexIndexes = graphState.graph.vertices.map((vertex) => vertex.index);
+    for (const vertexIndex of vertexIndexes) {
+      renderer.removeVertex(vertexIndex);
+    }
+
+    graphState.initialValues.clear();
+    renderer.update(graphState.initialValues);
+    renderer.render();
+    refreshEdgePlacementStatus();
+  };
+
+  const handleContextMenu = (event: MouseEvent) => {
+    if (currentTool !== "addEdge" || addEdgeSource === null) {
+      return;
+    }
+    event.preventDefault();
+    addEdgeSource = null;
+    hideTooltip();
+    refreshEdgePlacementStatus();
+  };
 
   const handleValueInput = () => {
     if (selectedVertexIndex === null) {
@@ -344,14 +397,17 @@ export function setupGraphEditor(
     addEdgeSource = selectedVertexIndex;
     setTool("addEdge");
     hideTooltip();
+    refreshEdgePlacementStatus();
   };
 
   moveButton.addEventListener("click", handleMoveToolClick);
   addNodeButton.addEventListener("click", handleAddNodeToolClick);
   addEdgeButton.addEventListener("click", handleAddEdgeToolClick);
   deleteButton.addEventListener("click", handleDeleteToolClick);
+  clearGraphButton.addEventListener("click", handleClearGraphClick);
   valueInput.addEventListener("input", handleValueInput);
   addConnectionButton.addEventListener("click", handleAddConnectionClick);
+  canvasShell.addEventListener("contextmenu", handleContextMenu);
   window.addEventListener("pointermove", onCanvasPointerMove);
   window.addEventListener("pointerup", stopDragging);
   window.addEventListener("keydown", handleEscape);
@@ -364,6 +420,7 @@ export function setupGraphEditor(
   };
 
   refreshToolUI();
+  refreshEdgePlacementStatus();
 
   renderer.update(graphState.initialValues);
   renderer.render();
@@ -377,8 +434,10 @@ export function setupGraphEditor(
       addNodeButton.removeEventListener("click", handleAddNodeToolClick);
       addEdgeButton.removeEventListener("click", handleAddEdgeToolClick);
       deleteButton.removeEventListener("click", handleDeleteToolClick);
+      clearGraphButton.removeEventListener("click", handleClearGraphClick);
       valueInput.removeEventListener("input", handleValueInput);
       addConnectionButton.removeEventListener("click", handleAddConnectionClick);
+      canvasShell.removeEventListener("contextmenu", handleContextMenu);
 
       renderer.setEditorMode(false);
       renderer.onNodePointerDown = null;
@@ -387,6 +446,7 @@ export function setupGraphEditor(
       stopDragging();
       hideTooltip();
       toolbar.remove();
+      edgePlacementStatus.remove();
       tooltip.remove();
     },
   };
